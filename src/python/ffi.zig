@@ -21,6 +21,11 @@ pub const PyObject = c.PyObject;
 pub extern fn PyEval_SaveThread() ?*anyopaque;
 pub extern fn PyEval_RestoreThread(?*anyopaque) void;
 
+// Sub-interpreter lifecycle. Both take/return an opaque thread-state token
+// for the same reason as above — we don't need the concrete PyThreadState type.
+pub extern fn Py_NewInterpreterFromConfig(tstate_p: *?*anyopaque, config: *const c.PyInterpreterConfig) c.PyStatus;
+pub extern fn Py_EndInterpreter(tstate: *anyopaque) void;
+
 // ── Layer 2: Zig-idiomatic wrappers ─────────────────────────────────
 
 pub const PythonError = error{
@@ -31,6 +36,7 @@ pub const PythonError = error{
     CallError,
     ConversionError,
     ModuleStateError,
+    ModuleNameTooLong,
 };
 
 /// Initialize the CPython interpreter.
@@ -50,6 +56,91 @@ pub fn runString(code: [*:0]const u8) PythonError!void {
     if (c.PyRun_SimpleString(code) != 0) return error.PythonError;
 }
 
+/// Ensure the current thread holds the GIL. Callers that don't intend to
+/// release it (e.g. sub-interpreter init where teardown happens elsewhere)
+/// can discard the returned state.
+pub fn gilStateEnsure() c.PyGILState_STATE {
+    return c.PyGILState_Ensure();
+}
+
+/// Return true if a `PyStatus` represents an error.
+pub fn statusIsError(status: c.PyStatus) bool {
+    return c.PyStatus_IsError(status) != 0;
+}
+
+/// Get an attribute from the `sys` module by name (e.g. `"path"`).
+/// Returns a borrowed reference — do NOT decref.
+pub fn sysGetObject(name: [*:0]const u8) PythonError!*PyObject {
+    return c.PySys_GetObject(name) orelse error.AttributeError;
+}
+
+/// Insert an item into a Python list at the given position.
+/// Steals no references; the list takes its own.
+pub fn listInsert(list: *PyObject, pos: isize, item: *PyObject) PythonError!void {
+    if (c.PyList_Insert(list, pos, item) != 0) return error.PythonError;
+}
+
+/// GIL strategy for a sub-interpreter.
+pub const InterpreterGil = enum(c_int) {
+    /// Inherit the default GIL strategy (currently shared).
+    default = 0,
+    /// Share the main interpreter's GIL. One GIL for all interpreters.
+    shared = 1,
+    /// Own GIL. Each interpreter has independent GIL state; no cross-interpreter GIL contention.
+    own = 2,
+};
+
+/// Zig-idiomatic sub-interpreter configuration.
+/// Translates to `c.PyInterpreterConfig` at call time via `toC()`.
+pub const InterpreterConfig = struct {
+    use_main_obmalloc: bool = false,
+    allow_fork: bool = false,
+    allow_exec: bool = false,
+    allow_threads: bool = true,
+    allow_daemon_threads: bool = false,
+    check_multi_interp_extensions: bool = true,
+    gil: InterpreterGil = .own,
+
+    pub fn toC(self: InterpreterConfig) c.PyInterpreterConfig {
+        return .{
+            .use_main_obmalloc = @intFromBool(self.use_main_obmalloc),
+            .allow_fork = @intFromBool(self.allow_fork),
+            .allow_exec = @intFromBool(self.allow_exec),
+            .allow_threads = @intFromBool(self.allow_threads),
+            .allow_daemon_threads = @intFromBool(self.allow_daemon_threads),
+            .check_multi_interp_extensions = @intFromBool(self.check_multi_interp_extensions),
+            .gil = @intFromEnum(self.gil),
+        };
+    }
+};
+
+/// Create a new sub-interpreter with the given config. Returns an opaque
+/// thread-state token for the new interpreter. On failure, returns error.
+/// The calling thread must already hold a GIL.
+pub fn newInterpreter(config: InterpreterConfig) PythonError!*anyopaque {
+    var tstate: ?*anyopaque = null;
+    var c_config = config.toC();
+    const status = Py_NewInterpreterFromConfig(&tstate, &c_config);
+    if (statusIsError(status)) return error.PythonError;
+    return tstate orelse error.PythonError;
+}
+
+/// Mutex-like handle for a saved sub-interpreter thread state.
+/// `lock` reattaches the thread to the interpreter (acquiring its GIL);
+/// `unlock` detaches and saves the new thread state for a later reattach.
+/// Follows `std.Thread.Mutex` conventions — use with `defer` for pairing.
+pub const GilLock = struct {
+    tstate: ?*anyopaque,
+
+    pub fn lock(self: *GilLock) void {
+        PyEval_RestoreThread(self.tstate);
+    }
+
+    pub fn unlock(self: *GilLock) void {
+        self.tstate = PyEval_SaveThread();
+    }
+};
+
 /// Import a Python module by name without printing exceptions.
 pub fn importModuleRaw(name: [*:0]const u8) PythonError!*PyObject {
     return c.PyImport_ImportModule(name) orelse error.ImportError;
@@ -61,6 +152,17 @@ pub fn importModule(name: [*:0]const u8) PythonError!*PyObject {
         errPrint();
         return err;
     };
+}
+
+/// Import a Python module from a non-null-terminated slice. Copies the name
+/// into a stack buffer to construct the C string CPython expects.
+/// Caller must decref the returned object.
+pub fn importModuleSlice(name: []const u8) PythonError!*PyObject {
+    var buf: [256:0]u8 = undefined;
+    if (name.len >= buf.len) return error.ModuleNameTooLong;
+    @memcpy(buf[0..name.len], name);
+    buf[name.len] = 0;
+    return importModule(buf[0..name.len :0]);
 }
 
 /// Get an attribute from a Python object without printing exceptions.
