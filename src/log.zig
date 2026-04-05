@@ -6,7 +6,7 @@
 //! The loop counter tracks event loop iterations (reap cycles).
 //! Call bumpLoop() from the reap point to increment it.
 //!
-//! Log lines are capped at 4096 bytes to preserve POSIX PIPE_BUF atomicity —
+//! Log lines are capped at 4096 bytes to preserve POSIX PIPE_BUF atomicity;
 //! writes at or below PIPE_BUF will not interleave with other threads' writes
 //! when stderr is piped. Oversized lines are dropped rather than split.
 

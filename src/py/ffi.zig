@@ -2,7 +2,7 @@
 //!
 //! Layer 1: Raw CPython C API bindings via @cImport.
 //! Layer 2: Zig-idiomatic wrappers with error handling and refcount helpers.
-//! Layer 3: Comptime function wrapper — converts Zig functions to CPython
+//! Layer 3: Comptime function wrapper - converts Zig functions to CPython
 //!          callables, handling error union → PyErr_SetString conversion.
 
 const std = @import("std");
@@ -22,7 +22,7 @@ pub extern fn PyEval_SaveThread() ?*anyopaque;
 pub extern fn PyEval_RestoreThread(?*anyopaque) void;
 
 // Sub-interpreter lifecycle. Both take/return an opaque thread-state token
-// for the same reason as above — we don't need the concrete PyThreadState type.
+// for the same reason as above - we don't need the concrete PyThreadState type.
 pub extern fn Py_NewInterpreterFromConfig(tstate_p: *?*anyopaque, config: *const c.PyInterpreterConfig) c.PyStatus;
 pub extern fn Py_EndInterpreter(tstate: *anyopaque) void;
 
@@ -69,7 +69,7 @@ pub fn statusIsError(status: c.PyStatus) bool {
 }
 
 /// Get an attribute from the `sys` module by name (e.g. `"path"`).
-/// Returns a borrowed reference — do NOT decref.
+/// Returns a borrowed reference - do NOT decref.
 pub fn sysGetObject(name: [*:0]const u8) PythonError!*PyObject {
     return c.PySys_GetObject(name) orelse error.AttributeError;
 }
@@ -135,7 +135,7 @@ pub fn newInterpreter(config: InterpreterConfig) PythonError!*anyopaque {
 /// Mutex-like handle for a saved sub-interpreter thread state.
 /// `lock` reattaches the thread to the interpreter (acquiring its GIL);
 /// `unlock` detaches and saves the new thread state for a later reattach.
-/// Follows `std.Thread.Mutex` conventions — use with `defer` for pairing.
+/// Follows `std.Thread.Mutex` conventions - use with `defer` for pairing.
 pub const GilLock = struct {
     tstate: ?*anyopaque,
 
@@ -228,13 +228,13 @@ pub fn callObjectKwargsRaw(callable: *PyObject, args: ?*PyObject, kwargs: *PyObj
 }
 
 /// Vectorcall a Python callable with no arguments (PEP 590).
-/// Fastest calling convention — no tuple creation, no method lookup.
+/// Fastest calling convention - no tuple creation, no method lookup.
 pub fn vectorcallNoArgs(callable: *PyObject) PythonError!*PyObject {
     return c.PyObject_Vectorcall(callable, null, 0, null) orelse error.CallError;
 }
 
 /// Vectorcall a Python callable with a single positional argument (PEP 590).
-/// Avoids tuple creation — passes a stack array directly.
+/// Avoids tuple creation - passes a stack array directly.
 pub fn vectorcallOneArg(callable: *PyObject, arg: *PyObject) PythonError!*PyObject {
     var args = [1]?*PyObject{arg};
     return c.PyObject_Vectorcall(callable, @ptrCast(&args), 1, null) orelse error.CallError;
@@ -328,7 +328,7 @@ pub fn coroutineClose(coro: *PyObject) void {
     }
 }
 
-/// Fast coroutine/generator send — bypasses method lookup, tuple creation,
+/// Fast coroutine/generator send - bypasses method lookup, tuple creation,
 /// and StopIteration exception overhead. Uses the am_send slot directly.
 pub const SendResult = enum(c_int) { @"return" = 0, @"error" = -1, next = 1 };
 pub fn iterSend(iter: *PyObject, arg: *PyObject) struct { result: ?*PyObject, status: SendResult } {
@@ -377,7 +377,7 @@ pub fn boolFromBool(v: bool) *PyObject {
     return c.PyBool_FromLong(@intFromBool(v));
 }
 
-/// Borrowed reference to None — no incref, do NOT decref.
+/// Borrowed reference to None - no incref, do NOT decref.
 /// Use for transient reads (e.g. passing to PyIter_Send which increfs internally).
 pub fn none() *PyObject {
     return @ptrCast(&c._Py_NoneStruct);
@@ -388,7 +388,7 @@ pub fn isNone(obj: *PyObject) bool {
     return obj == none();
 }
 
-/// New reference to None — caller must decref.
+/// New reference to None - caller must decref.
 pub fn getNone() *PyObject {
     const n = none();
     incref(n);
@@ -620,7 +620,7 @@ pub fn isCallable(obj: *PyObject) bool {
     return c.PyCallable_Check(obj) != 0;
 }
 
-/// Get tuple item (borrowed reference — do NOT decref).
+/// Get tuple item (borrowed reference - do NOT decref).
 pub fn tupleGetItem(tuple: *PyObject, index: isize) ?*PyObject {
     return c.PyTuple_GetItem(tuple, index);
 }
@@ -740,7 +740,7 @@ test "call python function" {
     defer decref(add_fn);
 
     const args = try tupleNew(2);
-    // tupleSetItem steals the reference — no decref on the items
+    // tupleSetItem steals the reference - no decref on the items
     try tupleSetItem(args, 0, try longFromLong(3));
     try tupleSetItem(args, 1, try longFromLong(4));
 

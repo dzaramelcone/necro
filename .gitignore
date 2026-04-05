@@ -2,7 +2,7 @@
 .zig-cache/
 zig-out/
 
-# Cross-compile sysroots (Python headers/libs — regenerate from a base image)
+# Cross-compile sysroots
 sysroot/
 
 # Python

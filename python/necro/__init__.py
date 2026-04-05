@@ -1,1 +1,1 @@
-"""necro — the fastest Python web framework."""
+"""necro - the fastest Python web framework."""

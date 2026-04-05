@@ -24,7 +24,7 @@ pub const WorkerPyContext = struct {
         const tstate = try ffi.newInterpreter(.{});
         errdefer ffi.Py_EndInterpreter(tstate);
 
-        // Sub-interpreters start with minimal sys.path — add cwd and site packages.
+        // Sub-interpreters start with minimal sys.path - add cwd and site packages.
         const sys_path = try ffi.sysGetObject("path");
         const cwd = try ffi.unicodeFromString(".");
         defer ffi.decref(cwd);
