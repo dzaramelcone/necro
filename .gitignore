@@ -1,0 +1,39 @@
+# Zig
+.zig-cache/
+zig-out/
+
+# Cross-compile sysroots (Python headers/libs — regenerate from a base image)
+sysroot/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+build/
+dist/
+wheels/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+.hypothesis/
+
+# venvs
+.venv/
+venv/
+env/
+.env
+
+# editors / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store

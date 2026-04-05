@@ -1,0 +1,7 @@
+.{
+    .name = .necro,
+    .version = "0.0.1",
+    .minimum_zig_version = "0.15.2",
+    .paths = .{""},
+    .fingerprint = 0x664d2bc4d8526ed9,
+}

@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "necro"
+version = "0.0.0.dev1"
+description = "The fastest Python web framework."
+readme = "README.md"
+requires-python = ">=3.14"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Dzara Melcone" }]
+
+[tool.hatch.build.targets.wheel]
+packages = ["python/necro"]
