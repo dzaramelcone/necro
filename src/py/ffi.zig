@@ -80,6 +80,13 @@ pub fn listInsert(list: *PyObject, pos: isize, item: *PyObject) PythonError!void
     if (c.PyList_Insert(list, pos, item) != 0) return error.PythonError;
 }
 
+/// Create a heap type from a module + spec. `bases` is a tuple of base
+/// classes, or null for the default (object). Caller owns a strong reference
+/// to the returned type object.
+pub fn typeFromModuleAndSpec(mod: *PyObject, spec: *c.PyType_Spec, bases: ?*PyObject) PythonError!*PyObject {
+    return c.PyType_FromModuleAndSpec(mod, spec, bases) orelse error.PythonError;
+}
+
 /// GIL strategy for a sub-interpreter.
 pub const InterpreterGil = enum(c_int) {
     /// Inherit the default GIL strategy (currently shared).
