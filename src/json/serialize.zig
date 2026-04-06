@@ -16,8 +16,6 @@ fn repeatByte8(comptime b: u8) u64 {
 const lo7_mask: u64 = repeatByte8(0x7F);
 const hi_mask: u64 = repeatByte8(0x80);
 
-/// Comptime escape lookup table.
-/// Non-zero entries: 2-byte escape packed into u16 (first byte in low bits).
 const escape_lut: [256]u16 = blk: {
     var t: [256]u16 = @splat(0);
     t['"'] = pack2('\\', '"');
@@ -34,8 +32,6 @@ fn pack2(a: u8, b: u8) u16 {
     return @as(u16, a) | (@as(u16, b) << 8);
 }
 
-/// Write the escape sequence for byte `c` into `out`.
-/// Returns the number of bytes written (2 or 6).
 inline fn writeEscapeByte(out: []u8, c: u8) SerializeError!usize {
     const escaped = escape_lut[c];
     if (escaped != 0) {
@@ -44,7 +40,7 @@ inline fn writeEscapeByte(out: []u8, c: u8) SerializeError!usize {
         out[1] = @truncate(escaped >> 8);
         return 2;
     }
-    // Control char < 0x20 without a named escape → \u00XX
+
     if (out.len < 6) return error.BufferOverflow;
     const hex = "0123456789ABCDEF";
     out[0] = '\\';
@@ -56,13 +52,10 @@ inline fn writeEscapeByte(out: []u8, c: u8) SerializeError!usize {
     return 6;
 }
 
-/// Find the offset of the first byte in `input[start..]` that needs JSON escaping.
-/// Returns input.len if no escapable byte is found.
 inline fn findNextEscapable(input: []const u8, start: usize) usize {
     var pos = start;
     const n = input.len;
 
-    // SIMD scan: vec_len bytes at a time
     if (comptime vec_len > 0) {
         const quote_v: VecU8 = @splat('"');
         const bs_v: VecU8 = @splat('\\');
@@ -72,7 +65,6 @@ inline fn findNextEscapable(input: []const u8, start: usize) usize {
             const v: VecU8 = input[pos..][0..vec_len].*;
             const needs_escape = (v == quote_v) | (v == bs_v) | (v < ctrl_v);
             if (@reduce(.Or, needs_escape)) {
-                // Scan within this chunk for exact position
                 for (0..vec_len) |j| {
                     const c = input[pos + j];
                     if (c < 0x20 or c == '"' or c == '\\') return pos + j;
@@ -82,7 +74,6 @@ inline fn findNextEscapable(input: []const u8, start: usize) usize {
         }
     }
 
-    // SWAR scan: 8 bytes at a time
     while (pos + 8 <= n) {
         const swar = std.mem.readInt(u64, input[pos..][0..8], .little);
         const lo7 = swar & lo7_mask;
@@ -97,7 +88,6 @@ inline fn findNextEscapable(input: []const u8, start: usize) usize {
         pos += 8;
     }
 
-    // Scalar tail
     while (pos < n) : (pos += 1) {
         const c = input[pos];
         if (c < 0x20 or c == '"' or c == '\\') return pos;
@@ -105,18 +95,13 @@ inline fn findNextEscapable(input: []const u8, start: usize) usize {
     return n;
 }
 
-/// JSON string content escaper using find-then-memcpy (simdjson pattern).
-/// Writes escaped content of `input` into `output` WITHOUT surrounding quotes.
-/// Returns the number of bytes written.
 pub fn writeJsonEscaped(output: []u8, input: []const u8) SerializeError!usize {
     var src: usize = 0;
     var dst: usize = 0;
 
     while (src < input.len) {
-        // Find next byte that needs escaping
         const esc_pos = findNextEscapable(input, src);
 
-        // Copy clean region
         const clean_len = esc_pos - src;
         if (clean_len > 0) {
             if (dst + clean_len > output.len) return error.BufferOverflow;
@@ -125,10 +110,8 @@ pub fn writeJsonEscaped(output: []u8, input: []const u8) SerializeError!usize {
             src += clean_len;
         }
 
-        // If we reached the end, done
         if (src >= input.len) break;
 
-        // Escape one byte
         const esc_len = try writeEscapeByte(output[dst..], input[src]);
         dst += esc_len;
         src += 1;
@@ -137,14 +120,11 @@ pub fn writeJsonEscaped(output: []u8, input: []const u8) SerializeError!usize {
     return dst;
 }
 
-/// JSON string content escaper using speculative stores.
-/// Faster on clean data, slower on dense escapes.
 pub fn writeJsonEscapedSpeculative(output: []u8, input: []const u8) SerializeError!usize {
     var src: usize = 0;
     var dst: usize = 0;
     const n = input.len;
 
-    // SIMD path: vec_len bytes at a time with speculative store
     if (comptime vec_len > 0) {
         const quote_v: VecU8 = @splat('"');
         const bs_v: VecU8 = @splat('\\');
@@ -156,7 +136,6 @@ pub fn writeJsonEscapedSpeculative(output: []u8, input: []const u8) SerializeErr
             const chunk = input[src..][0..vec_len];
             const v: VecU8 = chunk.*;
 
-            // Speculative store - write before checking
             output[dst..][0..vec_len].* = chunk.*;
 
             const needs_escape = (v == quote_v) | (v == bs_v) | (v < ctrl_v);
@@ -167,7 +146,6 @@ pub fn writeJsonEscapedSpeculative(output: []u8, input: []const u8) SerializeErr
                 continue;
             }
 
-            // Escape found - scalar scan to locate it.
             while (input[src] >= 0x20 and input[src] != '"' and input[src] != '\\') {
                 dst += 1;
                 src += 1;
@@ -178,7 +156,6 @@ pub fn writeJsonEscapedSpeculative(output: []u8, input: []const u8) SerializeErr
         }
     }
 
-    // SWAR path: 8 bytes at a time with speculative store
     while (src + 8 <= n) {
         if (dst + 8 > output.len) return error.BufferOverflow;
 
@@ -206,7 +183,6 @@ pub fn writeJsonEscapedSpeculative(output: []u8, input: []const u8) SerializeErr
         src += 1;
     }
 
-    // Scalar tail
     while (src < n) : (src += 1) {
         const c = input[src];
         if (c >= 0x20 and c != '"' and c != '\\') {
@@ -222,8 +198,6 @@ pub fn writeJsonEscapedSpeculative(output: []u8, input: []const u8) SerializeErr
     return dst;
 }
 
-/// JSON string writer (with surrounding quotes).
-/// Returns the number of bytes written including quotes.
 pub fn writeJsonString(output: []u8, input: []const u8) SerializeError!usize {
     if (output.len < 2) return error.BufferOverflow;
     output[0] = '"';
@@ -233,12 +207,10 @@ pub fn writeJsonString(output: []u8, input: []const u8) SerializeError!usize {
     return 2 + content_len;
 }
 
-/// Direct-to-buffer JSON writer. Tracks position and emits commas automatically.
 pub const Serializer = struct {
     buf: []u8,
     pos: usize = 0,
     depth: u16 = 0,
-    /// Bit per nesting level: 0 = first element (no comma), 1 = needs comma.
     needs_comma: u64 = 0,
 
     pub fn init(buf: []u8) Serializer {
@@ -269,12 +241,11 @@ pub const Serializer = struct {
         self.markNotFirst();
     }
 
-    /// Write an object key (followed by colon). Must be inside beginObject/endObject.
     pub fn key(self: *Serializer, k: []const u8) SerializeError!void {
         try self.writeCommaIfNeeded();
         try self.writeEscapedString(k);
         try self.writeByte(':');
-        self.clearCommaFlag(); // value follows key, no comma before it
+        self.clearCommaFlag();
     }
 
     pub fn string(self: *Serializer, s: []const u8) SerializeError!void {
@@ -320,7 +291,6 @@ pub const Serializer = struct {
         self.markNotFirst();
     }
 
-    /// Get the written JSON output.
     pub fn output(self: *const Serializer) []const u8 {
         return self.buf[0..self.pos];
     }
@@ -337,8 +307,6 @@ pub const Serializer = struct {
     pub fn rewind(self: *Serializer, pos: usize) void {
         self.pos = pos;
     }
-
-    // -- internal helpers --
 
     fn writeByte(self: *Serializer, b: u8) SerializeError!void {
         if (self.pos >= self.buf.len) return SerializeError.BufferOverflow;
@@ -365,7 +333,6 @@ pub const Serializer = struct {
 
     fn pushLevel(self: *Serializer) void {
         self.depth += 1;
-        // Clear the bit for this new level (first element, no comma).
         self.needs_comma &= ~(@as(u64, 1) << @intCast(self.depth - 1));
     }
 
@@ -443,10 +410,6 @@ test "buffer overflow returns error" {
     const result = s.string("this is way too long for the buffer");
     try std.testing.expectError(SerializeError.BufferOverflow, result);
 }
-
-// ---------------------------------------------------------------------------
-// SIMD / SWAR escape writer tests
-// ---------------------------------------------------------------------------
 
 test "writeJsonEscaped: clean ASCII" {
     var buf: [256]u8 = undefined;
@@ -534,8 +497,6 @@ test "writeJsonEscaped: buffer overflow" {
     try std.testing.expectError(SerializeError.BufferOverflow, result);
 }
 
-/// Byte-at-a-time JSON escape writer. No SIMD, no SWAR.
-/// Used as ground truth for testing the accelerated version.
 pub fn writeJsonEscapedScalar(output: []u8, input: []const u8) SerializeError!usize {
     var dst: usize = 0;
     for (input) |c| {
@@ -568,7 +529,6 @@ pub fn writeJsonEscapedScalar(output: []u8, input: []const u8) SerializeError!us
 }
 
 test "writeJsonEscaped: exhaustive all 256 byte values" {
-    // Each byte individually - SIMD vs scalar must agree
     var simd_buf: [8]u8 = undefined;
     var scalar_buf: [8]u8 = undefined;
     for (0..256) |i| {
@@ -580,7 +540,6 @@ test "writeJsonEscaped: exhaustive all 256 byte values" {
 }
 
 test "writeJsonEscaped: multi-byte sequences match scalar" {
-    // Pairs of bytes - catches cross-byte SWAR/SIMD interaction bugs
     var simd_buf: [16]u8 = undefined;
     var scalar_buf: [16]u8 = undefined;
     const interesting = [_]u8{ 0x00, 0x01, 0x08, 0x0c, 0x1F, 0x20, '"', '\\', 'A', 0x7F, 0x80, 0xFF };
@@ -595,7 +554,6 @@ test "writeJsonEscaped: multi-byte sequences match scalar" {
 }
 
 test "writeJsonEscaped: 17-byte string with escape at each position" {
-    // Forces escape at every offset within a 16-byte SIMD chunk + tail
     var simd_buf: [256]u8 = undefined;
     var scalar_buf: [256]u8 = undefined;
     var input: [17]u8 = undefined;
@@ -611,7 +569,6 @@ test "writeJsonEscaped: 17-byte string with escape at each position" {
 }
 
 test "writeJsonEscaped: 9-byte string with escape at each position (SWAR)" {
-    // Forces escape at every offset within an 8-byte SWAR chunk + tail
     var simd_buf: [128]u8 = undefined;
     var scalar_buf: [128]u8 = undefined;
     var input: [9]u8 = undefined;
@@ -629,20 +586,20 @@ test "writeJsonEscaped: 9-byte string with escape at each position (SWAR)" {
 test "writeJsonEscaped: high bytes (>= 0x80) pass through unchanged" {
     var simd_buf: [256]u8 = undefined;
     var scalar_buf: [256]u8 = undefined;
-    // 32 bytes of high-bit-set values - must all pass through
     var input: [32]u8 = undefined;
+
     for (0..32) |i| input[i] = @intCast(0x80 + i);
     const simd_len = try writeJsonEscaped(&simd_buf, &input);
     const scalar_len = try writeJsonEscapedScalar(&scalar_buf, &input);
+
     try std.testing.expectEqualStrings(scalar_buf[0..scalar_len], simd_buf[0..simd_len]);
-    // Also verify no escaping happened (output == input)
     try std.testing.expectEqualSlices(u8, &input, simd_buf[0..simd_len]);
 }
 
 test "writeJsonEscaped: dense escapes (worst case)" {
     var simd_buf: [512]u8 = undefined;
     var scalar_buf: [512]u8 = undefined;
-    // Every byte needs escaping
+
     const input = "\"\\\"\\\"\\\"\\\"\\\"\\\"\\\"\\";
     const simd_len = try writeJsonEscaped(&simd_buf, input);
     const scalar_len = try writeJsonEscapedScalar(&scalar_buf, input);
@@ -652,7 +609,7 @@ test "writeJsonEscaped: dense escapes (worst case)" {
 test "writeJsonEscaped: adjacent control chars" {
     var simd_buf: [512]u8 = undefined;
     var scalar_buf: [512]u8 = undefined;
-    // 32 consecutive control chars (0x00..0x1F)
+
     var input: [32]u8 = undefined;
     for (0..32) |i| input[i] = @intCast(i);
     const simd_len = try writeJsonEscaped(&simd_buf, input[0..32]);
