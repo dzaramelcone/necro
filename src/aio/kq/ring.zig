@@ -1,9 +1,13 @@
 const std = @import("std");
-const transport_pool = @import("pool.zig");
+const GenericPool = @import("../../pool.zig").Pool;
 
-pub const Buffer = transport_pool.Buffer;
-pub const Pool = transport_pool.Pool;
-pub const CAPACITY = transport_pool.CAPACITY;
+pub const CAPACITY: usize = 64 * 1024;
+
+pub const RecvBuffer = struct {
+    data: [CAPACITY]u8 = undefined,
+};
+
+pub const RecvPool = GenericPool(RecvBuffer);
 
 pub const Writable = struct {
     offset: usize,
@@ -11,19 +15,24 @@ pub const Writable = struct {
 };
 
 pub const Ring = struct {
-    buffer: ?*Buffer = null,
+    buf_idx: ?usize = null,
+    buf: ?*RecvBuffer = null,
     read_pos: usize = 0,
     used_len: usize = 0,
     parse_off: usize = 0,
 
-    pub fn ensure(self: *Ring, pool: *Pool) !void {
-        if (self.buffer == null) self.buffer = try pool.acquire();
+    pub fn ensure(self: *Ring, pool: *RecvPool) !void {
+        if (self.buf != null) return;
+        const idx = try pool.borrow();
+        self.buf_idx = idx;
+        self.buf = pool.get(idx);
     }
 
-    pub fn deinit(self: *Ring, pool: *Pool) void {
-        if (self.buffer) |buf| {
-            self.buffer = null;
-            pool.release(buf);
+    pub fn deinit(self: *Ring, pool: *RecvPool) void {
+        if (self.buf_idx) |idx| {
+            pool.release(idx);
+            self.buf_idx = null;
+            self.buf = null;
         }
         self.clear();
     }
@@ -38,8 +47,8 @@ pub const Ring = struct {
         return CAPACITY;
     }
 
-    pub fn bufferId(self: *const Ring) u16 {
-        return self.buffer.?.id;
+    pub fn bufIdx(self: *const Ring) usize {
+        return self.buf_idx.?;
     }
 
     pub fn parseOffset(self: *const Ring) usize {
@@ -56,14 +65,18 @@ pub const Ring = struct {
         return self.used_len - logical_off;
     }
 
-    pub fn writable(self: *Ring, pool: *Pool) !Writable {
+    fn data(self: *const Ring) *[CAPACITY]u8 {
+        return &self.buf.?.data;
+    }
+
+    pub fn writable(self: *Ring, pool: *RecvPool) !Writable {
         try self.ensure(pool);
         if (self.used_len == 0) {
             self.read_pos = 0;
             self.parse_off = 0;
             return .{
                 .offset = 0,
-                .slice = self.buffer.?.data,
+                .slice = self.data(),
             };
         }
         if (self.used_len >= CAPACITY) return error.TransportRingFull;
@@ -72,12 +85,12 @@ pub const Ring = struct {
         if (write_pos >= self.read_pos) {
             return .{
                 .offset = write_pos,
-                .slice = self.buffer.?.data[write_pos..],
+                .slice = self.data()[write_pos..],
             };
         }
         return .{
             .offset = write_pos,
-            .slice = self.buffer.?.data[write_pos..self.read_pos],
+            .slice = self.data()[write_pos..self.read_pos],
         };
     }
 
@@ -100,24 +113,25 @@ pub const Ring = struct {
         std.debug.assert(logical_off + len <= self.used_len);
         const start = self.logicalIndex(logical_off);
         if (start + len <= CAPACITY) {
-            return self.buffer.?.data[start .. start + len];
+            return self.data()[start .. start + len];
         }
         return null;
     }
 
     pub fn byteAt(self: *const Ring, logical_off: usize) u8 {
         std.debug.assert(logical_off < self.used_len);
-        return self.buffer.?.data[self.logicalIndex(logical_off)];
+        return self.data()[self.logicalIndex(logical_off)];
     }
 
     pub fn copyInto(self: *const Ring, logical_off: usize, dest: []u8) void {
         std.debug.assert(logical_off + dest.len <= self.used_len);
         if (dest.len == 0) return;
+        const d = self.data();
         const start = self.logicalIndex(logical_off);
         const first = @min(dest.len, CAPACITY - start);
-        @memcpy(dest[0..first], self.buffer.?.data[start .. start + first]);
+        @memcpy(dest[0..first], d[start .. start + first]);
         if (first < dest.len) {
-            @memcpy(dest[first..], self.buffer.?.data[0 .. dest.len - first]);
+            @memcpy(dest[first..], d[0 .. dest.len - first]);
         }
     }
 
@@ -141,8 +155,8 @@ pub const Ring = struct {
     }
 };
 
-test "ring wraps writable region to the front without copying unread bytes" {
-    var pool = try Pool.init(std.testing.allocator, 1);
+test "ring wraps writable region to the front" {
+    var pool: RecvPool = try .init(std.testing.allocator, 1);
     defer pool.deinit();
 
     var ring: Ring = .{};
@@ -166,7 +180,7 @@ test "ring wraps writable region to the front without copying unread bytes" {
 }
 
 test "ring exposes wrapped logical bytes in order" {
-    var pool = try Pool.init(std.testing.allocator, 1);
+    var pool: RecvPool = try .init(std.testing.allocator, 1);
     defer pool.deinit();
 
     var ring: Ring = .{};

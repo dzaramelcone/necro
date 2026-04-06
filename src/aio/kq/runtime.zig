@@ -29,10 +29,9 @@ const MAX_PG_STMTS = stmt_cache_mod.MAX_STMTS;
 const pg_stream = @import("../../db/pg_stream.zig");
 const slab_mod = @import("../../db/slab.zig");
 const SlabPool = slab_mod.SlabPool;
-const transport_pool = @import("pool.zig");
-const TransportPool = transport_pool.Pool;
-const transport_ring = @import("ring.zig");
-const TransportRing = transport_ring.Ring;
+const ring_mod = @import("ring.zig");
+const RecvPool = ring_mod.RecvPool;
+const Ring = ring_mod.Ring;
 const dispatch = @import("dispatch.zig");
 const row = @import("../../db/row.zig");
 
@@ -40,7 +39,7 @@ const log = std.log.scoped(.@"necro/pipeline");
 
 const MAX_BATCH = 1024;
 const MAX_IOVECS = 4; // status | common | per-response | body
-const TRANSPORT_BUFFER_COUNT = transport_pool.DEFAULT_BUFFER_COUNT;
+const RECV_BUFFER_COUNT = 64;
 const RESULT_SLAB_CACHE = 128;
 const RESULT_SLAB_MAX_LIVE = 1024;
 
@@ -138,7 +137,7 @@ pub const PgConn = struct {
     send_len: usize = 0,
     send_state: enum { idle, sending } = .idle,
     send_offset: usize = 0,
-    transport: TransportRing = .{},
+    transport: Ring = .{},
     recv_state: enum { idle, receiving, parsing, err } = .idle,
     in_flight: usize = 0,
     prepared: [MAX_PG_STMTS]bool = .{false} ** MAX_PG_STMTS,
@@ -282,14 +281,14 @@ pub const Pipeline = struct {
     pg_last_conn: u8 = 0, // last connection selected by pgSendSlice
     pg_wire_ns: u64 = 0, // total pg parse+py time (set by stagePostgres)
     pg_stmt_cache: StmtCache = .{},
-    pg_transport_pool: TransportPool,
+    pg_transport_pool: RecvPool,
     pg_result_pool: SlabPool,
 
     pub fn init(self: *Pipeline, allocator: std.mem.Allocator, conns: *Pool(Conn), entries: u16) !void {
         var backend = try kqueue.Kqueue.init(allocator, entries);
         errdefer backend.deinit(allocator);
 
-        var pg_transport_pool = try TransportPool.init(allocator, TRANSPORT_BUFFER_COUNT);
+        var pg_transport_pool = try RecvPool.init(allocator, RECV_BUFFER_COUNT);
         errdefer pg_transport_pool.deinit();
 
         var result_pool = SlabPool.init(allocator, RESULT_SLAB_MAX_LIVE);
@@ -1000,11 +999,11 @@ pub const Pipeline = struct {
                 if (pg.in_flight > 0) {
                     pg.recv_state = .receiving;
                     dispatch.submitPgRecv(self, pg) catch |err| switch (err) {
-                        error.TransportPoolExhausted => {
-                            try self.failPgConnForTransportPool(pg);
+                        error.RecvPoolExhausted => {
+                            try self.failPgConnForRecvPool(pg);
                             continue;
                         },
-                        error.TransportRingFull => {
+                        error.RingFull => {
                             try self.failPgConnWaitersWithStatus(pg, .internal_server_error, "Postgres transport ring full");
                             continue;
                         },
@@ -1028,11 +1027,11 @@ pub const Pipeline = struct {
                 if (pg.recv_state == .idle) {
                     pg.recv_state = .receiving;
                     dispatch.submitPgRecv(self, pg) catch |err| switch (err) {
-                        error.TransportPoolExhausted => {
-                            try self.failPgConnForTransportPool(pg);
+                        error.RecvPoolExhausted => {
+                            try self.failPgConnForRecvPool(pg);
                             continue;
                         },
-                        error.TransportRingFull => {
+                        error.RingFull => {
                             try self.failPgConnWaitersWithStatus(pg, .internal_server_error, "Postgres transport ring full");
                             continue;
                         },
@@ -1296,7 +1295,7 @@ pub const Pipeline = struct {
         }
     }
 
-    fn failPgConnForTransportPool(self: *Pipeline, pg: *PgConn) !void {
+    fn failPgConnForRecvPool(self: *Pipeline, pg: *PgConn) !void {
         log.warn(
             "postgres transport pool exhausted: fd={d} waiters={d} in_use={d}/{d} free={d}",
             .{ pg.fd, pg.waiter_count, self.pg_transport_pool.inUseCount(), self.pg_transport_pool.bufferCount(), self.pg_transport_pool.freeCount() },
