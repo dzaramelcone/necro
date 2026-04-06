@@ -15,6 +15,173 @@ pub const c = @cImport({
 
 /// Opaque PyObject pointer from CPython.
 pub const PyObject = c.PyObject;
+pub const PyTypeObject = c.PyTypeObject;
+pub const VisitProc = c.visitproc;
+pub const TypeSlot = c.PyType_Slot;
+pub const ModuleSlot = c.PyModuleDef_Slot;
+pub const MethodDef = c.PyMethodDef;
+pub const TypeSpec = c.PyType_Spec;
+
+pub const CallConv = enum(c_int) {
+    no_args = c.METH_NOARGS,
+    one = c.METH_O,
+    varargs = c.METH_VARARGS,
+    varargs_kwargs = c.METH_VARARGS | c.METH_KEYWORDS,
+    fastcall = c.METH_FASTCALL,
+    fastcall_kwargs = c.METH_FASTCALL | c.METH_KEYWORDS,
+};
+
+pub fn isTypeObject(obj: *PyObject) bool {
+    return c.PyType_Check(obj) != 0;
+}
+
+pub fn objType(obj: *PyObject) *PyTypeObject {
+    return c.Py_TYPE(obj);
+}
+
+pub fn isSubtype(sub: *PyTypeObject, base: *PyTypeObject) bool {
+    return c.PyType_IsSubtype(sub, base) != 0;
+}
+
+pub fn isExactInt(obj: *PyObject) bool { return objType(obj) == &c.PyLong_Type; }
+pub fn isExactBool(obj: *PyObject) bool { return objType(obj) == &c.PyBool_Type; }
+pub fn isExactFloat(obj: *PyObject) bool { return objType(obj) == &c.PyFloat_Type; }
+pub fn isExactStr(obj: *PyObject) bool { return objType(obj) == &c.PyUnicode_Type; }
+pub fn isExactList(obj: *PyObject) bool { return objType(obj) == &c.PyList_Type; }
+pub fn isExactDict(obj: *PyObject) bool { return objType(obj) == &c.PyDict_Type; }
+pub fn isExactTuple(obj: *PyObject) bool { return objType(obj) == &c.PyTuple_Type; }
+
+pub fn isInt(obj: *PyObject) bool { return c.PyLong_Check(obj) != 0; }
+pub fn isBool(obj: *PyObject) bool { return c.PyBool_Check(obj) != 0; }
+pub fn isFloat(obj: *PyObject) bool { return c.PyFloat_Check(obj) != 0; }
+pub fn isList(obj: *PyObject) bool { return c.PyList_Check(obj) != 0; }
+
+pub fn longAsLongLong(obj: *PyObject) ?c_longlong {
+    const result = c.PyLong_AsLongLong(obj);
+    if (result == -1 and c.PyErr_Occurred() != null) return null;
+    return result;
+}
+
+pub fn longAsUnsignedLongLong(obj: *PyObject) ?c_ulonglong {
+    const result = c.PyLong_AsUnsignedLongLong(obj);
+    if (result == std.math.maxInt(c_ulonglong) and c.PyErr_Occurred() != null) return null;
+    return result;
+}
+
+pub const DictIter = struct {
+    pos: c.Py_ssize_t = 0,
+    key: ?*PyObject = null,
+    value: ?*PyObject = null,
+
+    pub fn next(self: *DictIter, dict: *PyObject) bool {
+        return c.PyDict_Next(dict, &self.pos, &self.key, &self.value) != 0;
+    }
+};
+
+pub fn richCompareEq(a: *PyObject, b: *PyObject) bool {
+    return c.PyObject_RichCompareBool(a, b, c.Py_EQ) == 1;
+}
+
+pub fn genericGetAttr(obj: ?*PyObject, name: ?*PyObject) ?*PyObject {
+    return c.PyObject_GenericGetAttr(obj, name);
+}
+
+pub fn listSize(list: *PyObject) isize {
+    return c.PyList_Size(list);
+}
+
+pub fn listGetItem(list: *PyObject, i: isize) ?*PyObject {
+    return c.PyList_GetItem(list, i);
+}
+
+pub fn memoryViewFromSlice(obj: *PyObject, data: []const u8) ?*PyObject {
+    var view = std.mem.zeroes(c.Py_buffer);
+    view.buf = @ptrCast(@constCast(data.ptr));
+    view.obj = obj;
+    view.len = @intCast(data.len);
+    view.itemsize = 1;
+    view.readonly = 1;
+    view.ndim = 1;
+    return c.PyMemoryView_FromBuffer(&view);
+}
+
+pub fn freeObject(obj: *PyObject) void {
+    const tp = objType(obj);
+    if (tp.tp_free) |free| free(obj);
+    decref(@ptrCast(tp));
+}
+
+pub fn gcUntrack(obj: *PyObject) void {
+    c.PyObject_GC_UnTrack(obj);
+}
+
+pub fn clearWeakRefs(obj: *PyObject) void {
+    c.PyObject_ClearWeakRefs(obj);
+}
+
+pub const exc = struct {
+    pub const TypeError: *PyObject = @ptrCast(c.PyExc_TypeError);
+    pub const RuntimeError: *PyObject = @ptrCast(c.PyExc_RuntimeError);
+    pub const ValueError: *PyObject = @ptrCast(c.PyExc_ValueError);
+    pub const AttributeError: *PyObject = @ptrCast(c.PyExc_AttributeError);
+    pub const IndexError: *PyObject = @ptrCast(c.PyExc_IndexError);
+    pub const StopIteration: *PyObject = @ptrCast(c.PyExc_StopIteration);
+};
+
+pub const Slot = struct {
+    pub const dealloc = c.Py_tp_dealloc;
+    pub const getattro = c.Py_tp_getattro;
+    pub const repr = c.Py_tp_repr;
+    pub const methods = c.Py_tp_methods;
+    pub const doc = c.Py_tp_doc;
+    pub const traverse = c.Py_tp_traverse;
+    pub const clear = c.Py_tp_clear;
+    pub const new = c.Py_tp_new;
+    pub const init = c.Py_tp_init;
+    pub const iter = c.Py_tp_iter;
+    pub const iternext = c.Py_tp_iternext;
+    pub const @"await" = c.Py_am_await;
+};
+
+pub const flags = struct {
+    pub const DEFAULT: c_ulong = c.Py_TPFLAGS_DEFAULT;
+    pub const BASETYPE: c_ulong = c.Py_TPFLAGS_BASETYPE;
+    pub const HAVE_GC: c_ulong = c.Py_TPFLAGS_HAVE_GC;
+};
+
+pub inline fn typeSlot(id: c_int, comptime payload: anytype) TypeSlot {
+    const T = @TypeOf(payload);
+    if (T == @TypeOf(null)) return .{ .slot = id, .pfunc = null };
+    if (@typeInfo(T) == .@"fn") return .{ .slot = id, .pfunc = @ptrCast(@constCast(&payload)) };
+    return .{ .slot = id, .pfunc = @ptrCast(@constCast(payload)) };
+}
+
+pub inline fn methodDef(comptime name: [*:0]const u8, comptime func: anytype, call: CallConv) MethodDef {
+    return .{
+        .ml_name = name,
+        .ml_meth = @ptrCast(&func),
+        .ml_flags = @intFromEnum(call),
+        .ml_doc = null,
+    };
+}
+
+pub fn table(comptime T: type, comptime entries: anytype) [entries.len + 1]T {
+    var arr: [entries.len + 1]T = undefined;
+    inline for (0..entries.len) |i| arr[i] = entries[i];
+    arr[entries.len] = .{};
+    return arr;
+}
+
+pub fn alloc(comptime T: type, type_obj: *PyObject) PythonError!*T {
+    const tp: *PyTypeObject = @ptrCast(@alignCast(type_obj));
+    const raw = tp.tp_alloc.?(tp, 0) orelse return error.PythonError;
+    const self: *T = @ptrCast(@alignCast(raw));
+    const base: *PyObject = @ptrCast(@alignCast(self));
+    const ob_base = base.*;
+    self.* = std.mem.zeroes(T);
+    base.* = ob_base;
+    return self;
+}
 
 // PyEval_SaveThread/RestoreThread use PyThreadState*, but the imported type
 // is not useful to us here. We only need the opaque saved thread-state token.
@@ -80,11 +247,8 @@ pub fn listInsert(list: *PyObject, pos: isize, item: *PyObject) PythonError!void
     if (c.PyList_Insert(list, pos, item) != 0) return error.PythonError;
 }
 
-/// Create a heap type from a module + spec. `bases` is a tuple of base
-/// classes, or null for the default (object). Caller owns a strong reference
-/// to the returned type object.
-pub fn typeFromModuleAndSpec(mod: *PyObject, spec: *c.PyType_Spec, bases: ?*PyObject) PythonError!*PyObject {
-    return c.PyType_FromModuleAndSpec(mod, spec, bases) orelse error.PythonError;
+pub fn typeFromModuleAndSpec(mod: *PyObject, spec: *const c.PyType_Spec, bases: ?*PyObject) PythonError!*PyObject {
+    return c.PyType_FromModuleAndSpec(mod, @constCast(spec), bases) orelse error.PythonError;
 }
 
 /// GIL strategy for a sub-interpreter.
@@ -291,6 +455,30 @@ pub fn xincref(obj: ?*PyObject) void {
 
 pub fn xdecref(obj: ?*PyObject) void {
     if (obj) |o| c.Py_DecRef(o);
+}
+
+pub fn clearOptional(obj: *?*PyObject) void {
+    if (obj.*) |owned| decref(owned);
+    obj.* = null;
+}
+
+pub fn decrefArgs(args: []?*PyObject) void {
+    for (args) |*slot| {
+        if (slot.*) |owned| {
+            decref(owned);
+            slot.* = null;
+        }
+    }
+}
+
+pub fn traverseArgs(args: []const ?*PyObject, visit: VisitProc, arg: ?*anyopaque) c_int {
+    for (args) |slot| {
+        if (slot) |owned| {
+            const rc = visit.?(@ptrCast(@constCast(owned)), arg);
+            if (rc != 0) return rc;
+        }
+    }
+    return 0;
 }
 
 // ── Error handling ──────────────────────────────────────────────────
@@ -678,6 +866,15 @@ pub fn moduleDef(
 /// Returns a PyObject* that CPython uses to create the module per-interpreter.
 pub fn moduleDefInit(def: *c.PyModuleDef) ?*PyObject {
     return c.PyModuleDef_Init(def);
+}
+
+/// Construct a PyModuleDef_Slot entry. Accepts null, a function, or a pointer/value.
+pub inline fn moduleSlot(id: c_int, comptime payload: anytype) c.PyModuleDef_Slot {
+    const T = @TypeOf(payload);
+    if (T == @TypeOf(null)) return .{ .slot = id, .value = null };
+    if (@typeInfo(T) == .@"fn") return .{ .slot = id, .value = @ptrCast(@constCast(&payload)) };
+    if (@typeInfo(T) == .comptime_int or @typeInfo(T) == .int) return .{ .slot = id, .value = @ptrFromInt(@as(usize, payload)) };
+    return .{ .slot = id, .value = @ptrCast(@constCast(payload)) };
 }
 
 /// Get the per-interpreter module state from a module object.
