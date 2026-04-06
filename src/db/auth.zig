@@ -27,8 +27,6 @@ pub fn computeMd5Password(user: []const u8, password: []const u8, salt: [4]u8) [
     result[2] = '5';
     @memcpy(result[3..35], &hex2);
 
-    // Scrub intermediate state derived from the password before returning.
-    // hex2/result are the wire value (not secret). h1/h2/digest1/digest2/hex1 are.
     std.crypto.secureZero(u8, std.mem.asBytes(&h1));
     std.crypto.secureZero(u8, std.mem.asBytes(&h2));
     std.crypto.secureZero(u8, &digest1);
