@@ -42,7 +42,7 @@ Memory:
 
 Benchmarked on consumer hardware.
 
-## Convenience
+## Simple
 A familiar developer experience:
 
 ```python
@@ -56,10 +56,8 @@ async def raise():
 app.run()
 ```
 
-## One dependency
-
 ```bash
-pip install necro
+necro run app:app
 ```
 
 ### Postgres
@@ -89,7 +87,7 @@ app.run()
 
 Built-in first-class Redis support!
 
-```
+```python
 import necro
 
 app = necro.App()
@@ -112,16 +110,20 @@ Highly optimized!
 Define your schema:
 
 ```sql
-CREATE TABLE IF NOT EXISTS zombies (
+-- undead.sql
+
+CREATE TABLE zombies (
     id SERIAL PRIMARY KEY,
-    decay_rate REAL NOT NULL DEFAULT 0.0,
-    graveyard TEXT NOT NULL DEFAULT 'unknown',
+    decay_rate REAL,
+    graveyard TEXT,
 );
 ```
 
 Define your queries:
 
 ```sql
+-- spells.sql
+
 -- name: SummonZombie :one
 SELECT * FROM zombies WHERE id = {id};
 
@@ -129,26 +131,30 @@ SELECT * FROM zombies WHERE id = {id};
 SELECT * FROM zombies ORDER BY decay_rate ASC;
 ```
 
+!!! info
+Did you know Claude's best language is SQL?
+
 Generate methods and models, complete with type hints and validations:
 
 ```bash
 necro scribe
 ```
 
-creates:
+generates:
 
 ```python
+# undead.py
 class Zombie(NecroModel):
     id: int
     decay_rate: float
     graveyard: str
 ```
 
-Now the `db` object will have your queries:
+Now the `db` will have your queries:
 
 ```python
-await db.summon_zombie(id=id)
-await db.raise_horde()
+await db.spells.summon_zombie(id=id)
+await db.spells.raise_horde()
 ```
 
 Serve type-safe results from your routes:
@@ -159,17 +165,21 @@ import necro
 app = necro.App()
 
 @app.post("/summon")
-async def summon(db) -> list[Zombie]:
-    return await db.raise_horde()
+async def raise_horde(spells) -> list[Zombie]:
+    return await spells.raise_horde()
 
 app.run()
 ```
-
-!!! info
-Did you know Claude's best language is SQL?
+### OpenAPI
 
 ### Validations
 
 ### Client
 
 ### Websockets
+
+## One dependency
+
+```bash
+pip install necro
+```
