@@ -6,7 +6,7 @@ The fastest HTTP/1.1 web server, period!  🧟‍♀️ 💨
 
 ## Speed
 
-Benchmarked on consumer hardware. With 1024 concurrent connections:
+Under maximum load from 4K users:
 
 ```
   ⎿  Summary:
@@ -20,19 +20,6 @@ Benchmarked on consumer hardware. With 1024 concurrent connections:
        Total data:      416.02 MiB
        Size/request:    30 B
        Size/sec:        41.58 MiB
-
-     Response time histogram:
-        0.012 ms [2]        |
-        9.108 ms [14538403] |■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
-       18.204 ms [2197]     |
-       27.300 ms [68]       |
-       36.396 ms [0]        |
-       45.492 ms [49]       |
-       54.589 ms [65]       |
-       63.685 ms [45]       |
-       72.781 ms [7]        |
-       81.877 ms [2]        |
-       90.973 ms [23]       |
 
      Response time distribution:
        10.00% in 0.1609 ms
@@ -53,10 +40,12 @@ Memory:
     peak RSS:   105 MB
 ```
 
+Benchmarked on consumer hardware.
+
 ## Convenience
 A familiar developer experience:
 
-```
+```python
 import necro
 app = necro.App()
 
@@ -68,15 +57,16 @@ app.run()
 ```
 
 ## One dependency
-```
+
+```bash
 pip install necro
 ```
 
 ### Postgres
 
-Built-in Postgres support.
+Built-in first-class Postgres support!
 
-```
+```python
 import necro
 app = necro.App()
 
@@ -97,27 +87,29 @@ app.run()
 
 ### Redis
 
-Built-in Redis support.
+Built-in first-class Redis support!
 
 ```
 import necro
 
 app = necro.App()
 
-@app.post("/bind/{name}")
-async def bind(redis, body, name):
-    await redis.set(name, body.soul)
-    await redis.expire(name, 3600)
-    return {"bound": name, "ttl": 3600}
+@app.post("/bind")
+async def bind(redis, body):
+    await redis.set(body.name, body.soul)
+    await redis.expire(body.name, 3600)
+    return {"bound": body.name, "ttl": 3600}
 
 app.run()
 ```
 
 ### Type-safe SQL
 
-The recommended approach to using the db. Highly optimized.
+The framework's recommended approach to using the db.
 
-Define your schema.
+Highly optimized!
+
+Define your schema:
 
 ```sql
 CREATE TABLE IF NOT EXISTS zombies (
@@ -127,7 +119,7 @@ CREATE TABLE IF NOT EXISTS zombies (
 );
 ```
 
-Define your queries.
+Define your queries:
 
 ```sql
 -- name: SummonZombie :one
@@ -137,12 +129,29 @@ SELECT * FROM zombies WHERE id = {id};
 SELECT * FROM zombies ORDER BY decay_rate ASC;
 ```
 
-Generate methods and models, complete with type hints and validations.
+Generate methods and models, complete with type hints and validations:
+
 ```bash
 necro scribe
 ```
 
-Serve type-safe results from your routes.
+creates:
+
+```python
+class Zombie(NecroModel):
+    id: int
+    decay_rate: float
+    graveyard: str
+```
+
+Now the `db` object will have your queries:
+
+```python
+await db.summon_zombie(id=id)
+await db.raise_horde()
+```
+
+Serve type-safe results from your routes:
 
 ```python
 import necro
@@ -156,9 +165,11 @@ async def summon(db) -> list[Zombie]:
 app.run()
 ```
 
-### Client
-
-### Websockets
+!!! info
+Did you know Claude's best language is SQL?
 
 ### Validations
 
+### Client
+
+### Websockets

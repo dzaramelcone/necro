@@ -1,0 +1,31 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: necro
+      POSTGRES_PASSWORD: necro
+      POSTGRES_DB: necro
+      POSTGRES_HOST_AUTH_METHOD: md5
+      POSTGRES_INITDB_ARGS: "--auth-host=md5"
+  bench:
+    build: .
+    ports:
+      - "8080:8080"
+    working_dir: /bench
+    command: sleep infinity
+    privileged: true
+    depends_on:
+      - postgres
+    environment:
+      PG_HOST: postgres
+      PG_PORT: "5432"
+      PG_USER: necro
+      PG_PASS: necro
+      PG_DB: necro
+    volumes:
+      - ../../python:/bench/necro_root
+      - ../../zig-out/lib:/bench/necro_lib:ro
+      - ./app.py:/bench/app.py:ro
+      - ./bench_hello.py:/bench/bench_hello.py:ro
+      - ./bench_plaintext.py:/bench/bench_plaintext.py:ro
+      - ./bench_db.py:/bench/bench_db.py:ro
