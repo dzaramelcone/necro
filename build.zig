@@ -36,13 +36,15 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/root.zig"),
             .target = target,
             .optimize = optimize,
-            .strip = true,
+            .strip = optimize != .Debug,
         }),
     });
     const options = b.addOptions();
     options.addOption(bool, "metrics", metrics);
     pyext.root_module.addOptions("build_options", options);
-    pyext.want_lto = true;
+    pyext.root_module.addImport("necro", pyext.root_module);
+    const os = target.result.os.tag;
+    pyext.lto = if (os == .macos) null else .full;
     pyext.link_gc_sections = true;
     linkPython(pyext.root_module);
     b.installArtifact(pyext);
