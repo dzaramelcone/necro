@@ -48,4 +48,18 @@ pub fn build(b: *std.Build) void {
     pyext.link_gc_sections = true;
     linkPython(pyext.root_module);
     b.installArtifact(pyext);
+
+    const test_step = b.step("test", "Run unit tests");
+    const unit_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/root.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    unit_tests.root_module.addOptions("build_options", options);
+    unit_tests.root_module.addImport("necro", unit_tests.root_module);
+    linkPython(unit_tests.root_module);
+    const run_tests = b.addRunArtifact(unit_tests);
+    test_step.dependOn(&run_tests.step);
 }
