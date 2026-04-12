@@ -62,6 +62,10 @@ pub fn Pool(comptime T: type) type {
         pub fn get(self: *const Self, lease: Lease) *T {
             return &self.items[@intFromEnum(lease)];
         }
+
+        pub fn numActive(self: *const Self) usize {
+            return self.items.len - self.free_len;
+        }
     };
 }
 
