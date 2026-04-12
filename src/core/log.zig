@@ -1,14 +1,4 @@
 //! Custom log function for necro.
-//!
-//! Format: [timestamp] [t:thread_id] [loop:N] [LEVEL] scope | message
-//! debug level is stripped in ReleaseFast (zero cost).
-//!
-//! The loop counter tracks event loop iterations (reap cycles).
-//! Call bumpLoop() from the reap point to increment it.
-//!
-//! Log lines are capped at 4096 bytes to preserve POSIX PIPE_BUF atomicity;
-//! writes at or below PIPE_BUF will not interleave with other threads' writes
-//! when stderr is piped. Oversized lines are dropped rather than split.
 
 const std = @import("std");
 
@@ -18,10 +8,6 @@ threadlocal var loop_count: u64 = 0;
 
 pub fn bumpLoop() void {
     loop_count += 1;
-}
-
-pub fn getLoopCount() u64 {
-    return loop_count;
 }
 
 pub fn logFn(
