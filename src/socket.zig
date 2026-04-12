@@ -1,5 +1,3 @@
-//! TCP socket setup — bind, listen, close.
-
 const std = @import("std");
 const posix = std.posix;
 
@@ -25,9 +23,5 @@ pub const Socket = struct {
 
     pub fn listen(self: Socket, backlog: u31) !void {
         try posix.listen(self.handle, backlog);
-    }
-
-    pub fn close(self: Socket) void {
-        posix.close(self.handle);
     }
 };

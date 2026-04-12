@@ -1,13 +1,19 @@
 //! Necro - Python extension module entry point.
 
 const std = @import("std");
-const log = @import("log.zig");
-const module = @import("py/module.zig");
+pub const py = @import("py/mod.zig");
+pub const http = @import("http/mod.zig");
+pub const aio = @import("aio/mod.zig");
+pub const core = @import("core/mod.zig");
+pub const pg = @import("pg/mod.zig");
+pub const json = @import("json/serialize.zig");
+pub const redis = @import("redis/resp.zig");
+pub const server = @import("server.zig");
 
 pub const std_options: std.Options = .{
-    .logFn = log.logFn,
+    .logFn = core.log.logFn,
 };
 
 comptime {
-    @export(&module.pyInitCore, .{ .name = "PyInit_core", .linkage = .strong });
+    @export(&py.module.pyInitCore, .{ .name = "PyInit_core", .linkage = .strong });
 }
