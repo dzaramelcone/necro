@@ -4,9 +4,9 @@ const std = @import("std");
 
 pub const MAX_HEADERS: usize = 64;
 
-pub const Method = std.http.Method;
+const Method = std.http.Method;
 
-pub const Header = struct {
+const Header = struct {
     name: []const u8,
     value: []const u8,
 };

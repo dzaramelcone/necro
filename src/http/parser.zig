@@ -1,4 +1,5 @@
 //! HTTP/1.1 request parser; zero copy zero alloc
+//! TODO: Switch to arena and parse into it.
 
 const std = @import("std");
 const request = @import("request.zig");
@@ -6,7 +7,7 @@ const headers = @import("headers.zig");
 const path = @import("path.zig");
 
 const Request = request.Request;
-const Method = request.Method;
+const Method = std.http.Method;
 const ParseError = request.ParseError;
 const MAX_HEADERS = request.MAX_HEADERS;
 
@@ -53,6 +54,7 @@ pub fn parse(bytes: []u8) ParseError!Request {
         req.header_count += 1;
 
         if (headers.headerValueOf("Content-Length", line)) |cl_val| {
+            if (req.content_length != null) return error.MalformedRequest;
             req.content_length = std.fmt.parseInt(usize, cl_val, 10) catch
                 return error.MalformedRequest;
         }
@@ -139,5 +141,8 @@ test "parse normalizes path" {
 test "parse preserves query string after normalization" {
     const req = try testParseMut("GET /a/./b?x=1&y=2 HTTP/1.1\r\nHost: x\r\n\r\n");
     try std.testing.expectEqualStrings("/a/b?x=1&y=2", req.uri.?);
+}
+test "parse rejects duplicate Content-Length" {
+    try std.testing.expectError(error.MalformedRequest, testParseMut("POST / HTTP/1.1\r\nContent-Length: 5\r\nContent-Length: 7\r\n\r\nhello"));
 }
 // TODO: fuzz

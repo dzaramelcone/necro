@@ -1,17 +1,9 @@
 //! Compiled radix trie router with per-method dispatch trees.
-//! Immutable after compilation.
-//!
-//! Zero-copy path param extraction via slices into the original URL.
-//! Static segments take priority over parameters.
-//! Route conflict detection at addRoute time.
-//! HEAD auto-generated from GET.
-//!
-//! 405 MethodNotAllowed with allowed methods when path matches but method doesn't.
 
 const std = @import("std");
 const testing = std.testing;
 
-pub const Method = std.http.Method;
+const Method = std.http.Method;
 
 pub const PathParam = struct {
     name: []const u8,
@@ -79,24 +71,36 @@ const Segment = struct {
 fn parseSegments(path: []const u8) ![16]Segment {
     var segs: [16]Segment = undefined;
     var count: usize = 0;
+    var param_count: usize = 0;
     var i: usize = 0;
 
     if (path.len == 0 or path[0] != '/') return error.InvalidPath;
 
     while (i < path.len) {
         if (path[i] == '{') {
-            // Find closing brace
             const start = i + 1;
             const end = std.mem.indexOfScalarPos(u8, path, start, '}') orelse return error.InvalidPath;
             const inside = path[start..end];
 
-            // Check for catch-all ":path" suffix
+            if (inside.len == 0) return error.EmptyParamName;
+            if (std.mem.indexOfScalar(u8, inside, '{') != null or
+                std.mem.indexOfScalar(u8, inside, '}') != null) return error.InvalidPath;
+
+            const next_pos = end + 1;
+            if (next_pos < path.len and path[next_pos] != '/' and path[next_pos] != '{') {
+                return error.InvalidPath;
+            }
+
             if (std.mem.indexOfScalar(u8, inside, ':')) |colon| {
                 if (count >= 16) return error.TooManySegments;
+                param_count += 1;
+                if (param_count > 8) return error.TooManyParams;
                 segs[count] = .{ .kind = .catchall, .text = inside[0..colon] };
                 count += 1;
             } else {
                 if (count >= 16) return error.TooManySegments;
+                param_count += 1;
+                if (param_count > 8) return error.TooManyParams;
                 segs[count] = .{ .kind = .param, .text = inside };
                 count += 1;
             }
@@ -259,6 +263,8 @@ pub const Router = struct {
     }
 
     pub fn match(self: *const Router, method: Method, path: []const u8) MatchResult {
+        if (std.mem.indexOfScalar(u8, path, 0) != null) return .not_found;
+
         const idx = @intFromEnum(method);
 
         // Try exact method tree
@@ -594,62 +600,32 @@ test "three routes: /, /health, /greet/{name}" {
         else => return error.TestUnexpectedResult,
     }
 }
-// ---------------------------------------------------------------------------
-// Known edge cases — these tests currently FAIL and document desired behavior.
-// Each corresponds to a bug or design hole found during review.
-// ---------------------------------------------------------------------------
 
-// Currently: addRoute silently accepts an empty param name.
-// Desired: reject at parse time with a clear error.
 test "empty param name {} is rejected" {
     var router = Router.init(testing.allocator);
     defer router.deinit();
     try testing.expectError(error.EmptyParamName, router.addRoute(.GET, "/users/{}", 1));
 }
 
-// Currently: nested braces are parsed weirdly — the inner '{' is captured
-// into the param name, and the dangling '}' becomes part of a static segment.
-// Desired: reject at parse time.
 test "nested braces in route pattern are rejected" {
     var router = Router.init(testing.allocator);
     defer router.deinit();
     try testing.expectError(error.InvalidPath, router.addRoute(.GET, "/files/{a{b}c}", 1));
 }
 
-// Currently: the route is accepted but is unreachable. The param captures
-// greedily up to the next '/', so a trailing static segment on the same URL
-// segment can never match. `/users/42suffix` fails to match `/users/{id}suffix`.
-// Desired: either support it at match time with lookahead, or reject at parse
-// time so the user knows their route is dead.
 test "param followed by static on same segment is rejected" {
     var router = Router.init(testing.allocator);
     defer router.deinit();
     try testing.expectError(error.InvalidPath, router.addRoute(.GET, "/users/{id}suffix", 1));
 }
 
-// Currently: addRoute accepts routes with more than MAX_PARAMS (8) param
-// placeholders. At match time the 9th+ param is silently dropped, producing a
-// handler call with incomplete params. Desired: reject at addRoute time —
-// the param count is fully determined by the static pattern, so it's
-// computable without running any requests.
-//
-// Note: MAX_PARAMS (8) is distinct from the 16-segment parseSegments limit.
-// A pattern with 9 params and short inter-param text stays under the segment
-// limit but still exceeds the param limit, so the two checks must be separate.
 test "too many params is rejected at addRoute" {
     var router = Router.init(testing.allocator);
     defer router.deinit();
-    // 1 static + 9 params = 10 segments (under the 16-segment limit) but 9
-    // params exceeds the 8-param MatchResult capacity.
     const pattern = "/{a}{b}{c}{d}{e}{f}{g}{h}{i}";
     try testing.expectError(error.TooManyParams, router.addRoute(.GET, pattern, 1));
 }
 
-// Currently: null bytes pass through unchallenged. `indexOfScalar(u8, path,
-// '/')` does not stop on \0, so a param value can contain null bytes. If any
-// downstream code treats this as a C string, \0 truncates it — classic CVE
-// shape. Desired: match() rejects paths containing null bytes and returns
-// not_found (or we add an explicit .invalid_path variant).
 test "null byte in path does not produce a match" {
     var router = Router.init(testing.allocator);
     defer router.deinit();

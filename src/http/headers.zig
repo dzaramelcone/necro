@@ -8,7 +8,7 @@ threadlocal var cached_common_response_hdr: [COMMON_RESPONSE_HDR_CAP]u8 = undefi
 threadlocal var cached_common_response_len: usize = 0;
 threadlocal var cached_common_response_epoch: i64 = 0;
 
-pub inline fn headersEqlLiteral(comptime needle: []const u8, input: []const u8) bool {
+inline fn headersEqlLiteral(comptime needle: []const u8, input: []const u8) bool {
     if (input.len != needle.len) return false;
     const N = needle.len;
     const V = @Vector(N, u8);
@@ -38,12 +38,11 @@ pub inline fn headerEqls(comptime name: []const u8, comptime value: []const u8, 
     return headersEqlLiteral(value, actual);
 }
 
-fn refreshCommonResponseHeaders() void {
-    const now = std.time.timestamp();
-    if (now == cached_common_response_epoch and cached_common_response_len > 0) return;
-    cached_common_response_epoch = now;
+pub fn refreshCommonResponseHeaders(now_seconds: i64) void {
+    if (now_seconds == cached_common_response_epoch and cached_common_response_len > 0) return;
+    cached_common_response_epoch = now_seconds;
 
-    const epoch_secs: u64 = @intCast(now);
+    const epoch_secs: u64 = @intCast(now_seconds);
     const es = std.time.epoch.EpochSeconds{ .secs = epoch_secs };
     const day_secs = es.getDaySeconds();
     const year_day = es.getEpochDay().calculateYearDay();
@@ -75,7 +74,9 @@ fn refreshCommonResponseHeaders() void {
 }
 
 pub fn commonResponseHeaders() []const u8 {
-    refreshCommonResponseHeaders();
+    if (cached_common_response_len == 0) {
+        refreshCommonResponseHeaders(std.time.timestamp());
+    }
     return cached_common_response_hdr[0..cached_common_response_len];
 }
 
