@@ -31,14 +31,6 @@ class App:
             return func
         return decorator
 
-    def run(self, host="0.0.0.0", port=8080, threads=1, module_ref="", backlog=2048):
-        print(f"\n  necro listening on http://{host}:{port}/ ({threads} threads)")
-        print(f"  {len(self._routes)} routes registered\n")
-        for method, path, _ in self._routes:
-            print(f"    {method} {path}")
-        print()
-        core.run(host, port, threads, module_ref, backlog)
-
 
 class Redis:
     def get(self, key: str):
