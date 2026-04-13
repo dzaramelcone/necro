@@ -6,7 +6,6 @@ const ffi = @import("../ffi.zig");
 const resp = necro.redis;
 const stmt = necro.pg.stmt;
 
-const c = ffi.c; // needed by callback section - cleanup pending
 const PyObject = ffi.PyObject;
 const PyTypeObject = ffi.PyTypeObject;
 const VisitProc = ffi.VisitProc;
@@ -226,7 +225,7 @@ fn clearFutureBase(self: *FutureObject) void {
     self.submitted = false;
 }
 
-pub fn futureTraverse(self_obj: ?*PyObject, visit: c.visitproc, arg: ?*anyopaque) callconv(.c) c_int {
+pub fn futureTraverse(self_obj: ?*PyObject, visit: ffi.VisitProc, arg: ?*anyopaque) callconv(.c) c_int {
     const self: *FutureObject = @ptrCast(@alignCast(self_obj orelse return 0));
     const refs = [_]?*PyObject{ self.result, self.exception, self.exception_tb, self.cancel_message };
     const rc = ffi.traverseArgs(&refs, visit, arg);
@@ -238,7 +237,7 @@ pub fn futureTraverse(self_obj: ?*PyObject, visit: c.visitproc, arg: ?*anyopaque
     };
 }
 
-pub fn taskTraverse(self_obj: ?*PyObject, visit: c.visitproc, arg: ?*anyopaque) callconv(.c) c_int {
+pub fn taskTraverse(self_obj: ?*PyObject, visit: ffi.VisitProc, arg: ?*anyopaque) callconv(.c) c_int {
     const rc = futureTraverse(self_obj, visit, arg);
     if (rc != 0) return rc;
     const self: *TaskObject = @ptrCast(@alignCast(self_obj orelse return 0));
@@ -265,20 +264,20 @@ pub fn taskClear(self_obj: ?*PyObject) callconv(.c) c_int {
 pub fn futureDealloc(self_obj: ?*PyObject) callconv(.c) void {
     const obj = self_obj orelse return;
     const self: *FutureObject = @ptrCast(@alignCast(obj));
-    c.PyObject_GC_UnTrack(obj);
-    c.PyObject_ClearWeakRefs(obj);
+    ffi.gcUntrack(obj);
+    ffi.clearWeakRefs(obj);
     _ = futureClear(obj);
-    const tp: *c.PyTypeObject = @ptrCast(@alignCast(self.ob_base.ob_type));
+    const tp: *ffi.PyTypeObject = @ptrCast(@alignCast(self.ob_base.ob_type));
     tp.tp_free.?(@ptrCast(self));
 }
 
 pub fn taskDealloc(self_obj: ?*PyObject) callconv(.c) void {
     const obj = self_obj orelse return;
     const self: *TaskObject = @ptrCast(@alignCast(obj));
-    c.PyObject_GC_UnTrack(obj);
-    c.PyObject_ClearWeakRefs(obj);
+    ffi.gcUntrack(obj);
+    ffi.clearWeakRefs(obj);
     _ = taskClear(obj);
-    const tp: *c.PyTypeObject = @ptrCast(@alignCast(self.future.ob_base.ob_type));
+    const tp: *ffi.PyTypeObject = @ptrCast(@alignCast(self.future.ob_base.ob_type));
     tp.tp_free.?(@ptrCast(self));
 }
 
@@ -286,7 +285,7 @@ pub fn futureIterDealloc(self_obj: ?*PyObject) callconv(.c) void {
     const obj = self_obj orelse return;
     const self: *FutureIterObject = @ptrCast(@alignCast(obj));
     ffi.clearOptional(&self.future);
-    const tp: *c.PyTypeObject = @ptrCast(@alignCast(self.ob_base.ob_type));
+    const tp: *ffi.PyTypeObject = @ptrCast(@alignCast(self.ob_base.ob_type));
     tp.tp_free.?(@ptrCast(self));
 }
 
@@ -313,8 +312,8 @@ fn makeCancelledError(message: ?*PyObject) ?*PyObject {
 }
 
 fn raiseStoredException(exc: *PyObject) ?*PyObject {
-    const exc_type: *PyObject = @ptrCast(@alignCast(c.Py_TYPE(exc)));
-    c.PyErr_SetObject(exc_type, exc);
+    const exc_type: *PyObject = @ptrCast(@alignCast(ffi.objType(exc)));
+    ffi.errSetObject(exc_type, exc);
     return null;
 }
 
@@ -331,7 +330,7 @@ pub fn futureIterNext(self_obj: ?*PyObject) callconv(.c) ?*PyObject {
     }
 
     if (future.state == .pending) {
-        c.PyErr_SetString(c.PyExc_RuntimeError, "await wasn't used with future");
+        ffi.errSetString(ffi.exc.RuntimeError(), "await wasn't used with future");
         return null;
     }
 
@@ -342,22 +341,22 @@ pub fn futureIterNext(self_obj: ?*PyObject) callconv(.c) ?*PyObject {
     }
     if (future.exception) |exc| return raiseStoredException(exc);
 
-    c.PyErr_SetObject(c.PyExc_StopIteration, future.result orelse ffi.none());
+    ffi.errSetObject(ffi.exc.StopIteration(), future.result orelse ffi.none());
     return null;
 }
 
 pub fn futureAwait(self_obj: ?*PyObject) callconv(.c) ?*PyObject {
     const obj = self_obj orelse {
-        c.PyErr_SetString(c.PyExc_RuntimeError, "missing future");
+        ffi.errSetString(ffi.exc.RuntimeError(), "missing future");
         return null;
     };
     const future: *FutureObject = @ptrCast(@alignCast(obj));
     const type_state = future.type_state orelse {
-        c.PyErr_SetString(c.PyExc_RuntimeError, "future type state missing");
+        ffi.errSetString(ffi.exc.RuntimeError(), "future type state missing");
         return null;
     };
     const iter_type = type_state.future_iter_type orelse {
-        c.PyErr_SetString(c.PyExc_RuntimeError, "future iterator type missing");
+        ffi.errSetString(ffi.exc.RuntimeError(), "future iterator type missing");
         return null;
     };
     const iter = ffi.alloc(FutureIterObject, iter_type) catch return null;
@@ -379,7 +378,7 @@ pub fn futureResultMethod(self_obj: ?*PyObject, _: ?*PyObject) callconv(.c) ?*Py
     const self: *FutureObject = @ptrCast(@alignCast(self_obj orelse return null));
     switch (self.state) {
         .pending => {
-            c.PyErr_SetString(c.PyExc_RuntimeError, "Result is not set.");
+            ffi.errSetString(ffi.exc.RuntimeError(), "Result is not set.");
             return null;
         },
         .cancelled => {
@@ -401,7 +400,7 @@ pub fn futureExceptionMethod(self_obj: ?*PyObject, _: ?*PyObject) callconv(.c) ?
     const self: *FutureObject = @ptrCast(@alignCast(self_obj orelse return null));
     switch (self.state) {
         .pending => {
-            c.PyErr_SetString(c.PyExc_RuntimeError, "Exception is not set.");
+            ffi.errSetString(ffi.exc.RuntimeError(), "Exception is not set.");
             return null;
         },
         .cancelled => {
@@ -424,7 +423,7 @@ pub fn futureCancelMethod(self_obj: ?*PyObject, args: ?*PyObject, kwargs: ?*PyOb
     if (self.state != .pending) return ffi.boolFromBool(false);
     if (args) |tuple| {
         if (!ffi.isTuple(tuple) or ffi.tupleSize(tuple) > 1) {
-            c.PyErr_SetString(c.PyExc_TypeError, "cancel() expects at most one argument");
+            ffi.errSetString(ffi.exc.TypeError(), "cancel() expects at most one argument");
             return null;
         }
         if (ffi.tupleSize(tuple) == 1) {
@@ -439,7 +438,7 @@ pub fn futureCancelMethod(self_obj: ?*PyObject, args: ?*PyObject, kwargs: ?*PyOb
 pub fn futureSetResultMethod(self_obj: ?*PyObject, arg: ?*PyObject) callconv(.c) ?*PyObject {
     const self: *FutureObject = @ptrCast(@alignCast(self_obj orelse return null));
     if (self.state != .pending) {
-        c.PyErr_SetString(c.PyExc_RuntimeError, "Future already done");
+        ffi.errSetString(ffi.exc.RuntimeError(), "Future already done");
         return null;
     }
     ffi.clearOptional(&self.result);
@@ -453,11 +452,11 @@ pub fn futureSetResultMethod(self_obj: ?*PyObject, arg: ?*PyObject) callconv(.c)
 pub fn futureSetExceptionMethod(self_obj: ?*PyObject, arg: ?*PyObject) callconv(.c) ?*PyObject {
     const self: *FutureObject = @ptrCast(@alignCast(self_obj orelse return null));
     const value = arg orelse {
-        c.PyErr_SetString(c.PyExc_TypeError, "set_exception() missing exception");
+        ffi.errSetString(ffi.exc.TypeError(), "set_exception() missing exception");
         return null;
     };
     if (self.state != .pending) {
-        c.PyErr_SetString(c.PyExc_RuntimeError, "Future already done");
+        ffi.errSetString(ffi.exc.RuntimeError(), "Future already done");
         return null;
     }
     const exc = coerceException(value) orelse return null;
@@ -511,7 +510,7 @@ pub fn taskGetNameMethod(self_obj: ?*PyObject, _: ?*PyObject) callconv(.c) ?*PyO
 pub fn taskSetNameMethod(self_obj: ?*PyObject, arg: ?*PyObject) callconv(.c) ?*PyObject {
     const self: *TaskObject = @ptrCast(@alignCast(self_obj orelse return null));
     const value = arg orelse {
-        c.PyErr_SetString(c.PyExc_TypeError, "set_name() missing value");
+        ffi.errSetString(ffi.exc.TypeError(), "set_name() missing value");
         return null;
     };
     ffi.clearOptional(&self.name);
@@ -549,7 +548,7 @@ pub fn taskRepr(self_obj: ?*PyObject) callconv(.c) ?*PyObject {
 }
 
 fn typeStateFromObject(obj: *PyObject) ffi.PythonError!*TypeState {
-    const raw = try ffi.typeGetModuleState(c.Py_TYPE(obj));
+    const raw = try ffi.typeGetModuleState(ffi.objType(obj));
     return @ptrCast(@alignCast(raw));
 }
 
@@ -621,39 +620,39 @@ fn initConstructedTask(self_obj: *PyObject, args: ?*PyObject, kwargs: ?*PyObject
     }
 }
 
-pub fn futureTypeNew(tp_obj: ?*c.PyTypeObject, _: ?*PyObject, _: ?*PyObject) callconv(.c) ?*PyObject {
+pub fn futureTypeNew(tp_obj: ?*ffi.PyTypeObject, _: ?*PyObject, _: ?*PyObject) callconv(.c) ?*PyObject {
     const tp = tp_obj orelse {
-        c.PyErr_SetString(c.PyExc_RuntimeError, "future type is null");
+        ffi.errSetString(ffi.exc.RuntimeError(), "future type is null");
         return null;
     };
     return tp.tp_alloc.?(tp, 0);
 }
 
 fn setUnhandledInitError(err: anyerror) c_int {
-    if (!ffi.errOccurred()) c.PyErr_SetString(c.PyExc_RuntimeError, @errorName(err));
+    if (!ffi.errOccurred()) ffi.errSetString(ffi.exc.RuntimeError(), @errorName(err));
     return -1;
 }
 
 pub fn futureTypeInit(self_obj: ?*PyObject, args: ?*PyObject, kwargs: ?*PyObject) callconv(.c) c_int {
     initConstructedFuture(self_obj orelse return -1, args, kwargs) catch |err| switch (err) {
         error.FutureArgsMustBeTuple => {
-            c.PyErr_SetString(c.PyExc_TypeError, "Future() arguments must be a tuple");
+            ffi.errSetString(ffi.exc.TypeError(), "Future() arguments must be a tuple");
             return -1;
         },
         error.FutureTakesNoPositionalArgs => {
-            c.PyErr_SetString(c.PyExc_TypeError, "Future() takes no positional arguments");
+            ffi.errSetString(ffi.exc.TypeError(), "Future() takes no positional arguments");
             return -1;
         },
         error.FutureKwargsMustBeDict => {
-            c.PyErr_SetString(c.PyExc_TypeError, "Future() keyword arguments must be a dict");
+            ffi.errSetString(ffi.exc.TypeError(), "Future() keyword arguments must be a dict");
             return -1;
         },
         error.FutureUnexpectedKeyword => {
-            c.PyErr_SetString(c.PyExc_TypeError, "Future() got an unexpected keyword argument");
+            ffi.errSetString(ffi.exc.TypeError(), "Future() got an unexpected keyword argument");
             return -1;
         },
         error.ModuleStateError => {
-            c.PyErr_SetString(c.PyExc_RuntimeError, "future type state missing");
+            ffi.errSetString(ffi.exc.RuntimeError(), "future type state missing");
             return -1;
         },
         else => return setUnhandledInitError(err),
@@ -661,9 +660,9 @@ pub fn futureTypeInit(self_obj: ?*PyObject, args: ?*PyObject, kwargs: ?*PyObject
     return 0;
 }
 
-pub fn taskTypeNew(tp_obj: ?*c.PyTypeObject, _: ?*PyObject, _: ?*PyObject) callconv(.c) ?*PyObject {
+pub fn taskTypeNew(tp_obj: ?*ffi.PyTypeObject, _: ?*PyObject, _: ?*PyObject) callconv(.c) ?*PyObject {
     const tp = tp_obj orelse {
-        c.PyErr_SetString(c.PyExc_RuntimeError, "task type is null");
+        ffi.errSetString(ffi.exc.RuntimeError(), "task type is null");
         return null;
     };
     return tp.tp_alloc.?(tp, 0);
@@ -672,27 +671,27 @@ pub fn taskTypeNew(tp_obj: ?*c.PyTypeObject, _: ?*PyObject, _: ?*PyObject) callc
 pub fn taskTypeInit(self_obj: ?*PyObject, args: ?*PyObject, kwargs: ?*PyObject) callconv(.c) c_int {
     initConstructedTask(self_obj orelse return -1, args, kwargs) catch |err| switch (err) {
         error.TaskMissingCoroutine => {
-            c.PyErr_SetString(c.PyExc_TypeError, "Task() missing coroutine");
+            ffi.errSetString(ffi.exc.TypeError(), "Task() missing coroutine");
             return -1;
         },
         error.TaskArgsMustBeTuple => {
-            c.PyErr_SetString(c.PyExc_TypeError, "Task() arguments must be a tuple");
+            ffi.errSetString(ffi.exc.TypeError(), "Task() arguments must be a tuple");
             return -1;
         },
         error.TaskTakesExactlyOnePositionalArg => {
-            c.PyErr_SetString(c.PyExc_TypeError, "Task() takes exactly one positional argument");
+            ffi.errSetString(ffi.exc.TypeError(), "Task() takes exactly one positional argument");
             return -1;
         },
         error.TaskKwargsMustBeDict => {
-            c.PyErr_SetString(c.PyExc_TypeError, "Task() keyword arguments must be a dict");
+            ffi.errSetString(ffi.exc.TypeError(), "Task() keyword arguments must be a dict");
             return -1;
         },
         error.TaskUnexpectedKeyword => {
-            c.PyErr_SetString(c.PyExc_TypeError, "Task() got an unexpected keyword argument");
+            ffi.errSetString(ffi.exc.TypeError(), "Task() got an unexpected keyword argument");
             return -1;
         },
         error.ModuleStateError => {
-            c.PyErr_SetString(c.PyExc_RuntimeError, "task type state missing");
+            ffi.errSetString(ffi.exc.RuntimeError(), "task type state missing");
             return -1;
         },
         else => return setUnhandledInitError(err),

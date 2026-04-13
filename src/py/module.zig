@@ -9,7 +9,6 @@ const row = necro.pg.row;
 const request = @import("request.zig");
 const driver = @import("driver.zig");
 
-const c = ffi.c;
 const PyObject = ffi.PyObject;
 
 const MAX_HANDLERS: usize = 64;
@@ -68,15 +67,15 @@ fn isCoroutineFunction(obj: *PyObject) bool {
 
 fn inspectHandlerFlags(handler_obj: *PyObject) HandlerFlags {
     var flags = HandlerFlags{};
-    flags.is_async = c.PyCoro_CheckExact(handler_obj) != 0 or isCoroutineFunction(handler_obj);
+    flags.is_async = ffi.isExactCoroutine(handler_obj) or isCoroutineFunction(handler_obj);
 
-    const code = c.PyObject_GetAttrString(handler_obj, "__code__") orelse {
+    const code = ffi.getAttrRaw(handler_obj, "__code__") catch {
         ffi.errClear();
         return flags;
     };
     defer ffi.decref(code);
 
-    const argcount_obj = c.PyObject_GetAttrString(code, "co_argcount") orelse {
+    const argcount_obj = ffi.getAttrRaw(code, "co_argcount") catch {
         ffi.errClear();
         return flags;
     };
@@ -89,7 +88,7 @@ fn inspectHandlerFlags(handler_obj: *PyObject) HandlerFlags {
         return flags;
     }
 
-    const varnames_obj = c.PyObject_GetAttrString(code, "co_varnames") orelse {
+    const varnames_obj = ffi.getAttrRaw(code, "co_varnames") catch {
         ffi.errClear();
         return flags;
     };
@@ -262,38 +261,38 @@ fn pyRun(self: ?*PyObject, args: ?*PyObject) callconv(.c) ?*PyObject {
 fn redisGet(state: *ModuleState, key: *PyObject) ffi.PythonError!*PyObject {
     return futures.createRedisFuture("GET", &state.future_types, &.{key});
 }
-fn redisSet(state: *ModuleState, args: [*]const *PyObject, nargs: c.Py_ssize_t) ffi.PythonError!*PyObject {
+fn redisSet(state: *ModuleState, args: [*]const *PyObject, nargs: ffi.Py_ssize_t) ffi.PythonError!*PyObject {
     return futures.createRedisFuture("SET", &state.future_types, args[0..@intCast(nargs)]);
 }
-fn redisSetex(state: *ModuleState, args: [*]const *PyObject, nargs: c.Py_ssize_t) ffi.PythonError!*PyObject {
+fn redisSetex(state: *ModuleState, args: [*]const *PyObject, nargs: ffi.Py_ssize_t) ffi.PythonError!*PyObject {
     return futures.createRedisFuture("SETEX", &state.future_types, args[0..@intCast(nargs)]);
 }
-fn redisDel(state: *ModuleState, args: [*]const *PyObject, nargs: c.Py_ssize_t) ffi.PythonError!*PyObject {
+fn redisDel(state: *ModuleState, args: [*]const *PyObject, nargs: ffi.Py_ssize_t) ffi.PythonError!*PyObject {
     return futures.createRedisFuture("DEL", &state.future_types, args[0..@intCast(nargs)]);
 }
-fn redisIncr(state: *ModuleState, args: [*]const *PyObject, nargs: c.Py_ssize_t) ffi.PythonError!*PyObject {
+fn redisIncr(state: *ModuleState, args: [*]const *PyObject, nargs: ffi.Py_ssize_t) ffi.PythonError!*PyObject {
     return futures.createRedisFuture("INCR", &state.future_types, args[0..@intCast(nargs)]);
 }
-fn redisExpire(state: *ModuleState, args: [*]const *PyObject, nargs: c.Py_ssize_t) ffi.PythonError!*PyObject {
+fn redisExpire(state: *ModuleState, args: [*]const *PyObject, nargs: ffi.Py_ssize_t) ffi.PythonError!*PyObject {
     return futures.createRedisFuture("EXPIRE", &state.future_types, args[0..@intCast(nargs)]);
 }
 fn redisTtl(state: *ModuleState, key: *PyObject) ffi.PythonError!*PyObject {
     return futures.createRedisFuture("TTL", &state.future_types, &.{key});
 }
-fn redisExists(state: *ModuleState, args: [*]const *PyObject, nargs: c.Py_ssize_t) ffi.PythonError!*PyObject {
+fn redisExists(state: *ModuleState, args: [*]const *PyObject, nargs: ffi.Py_ssize_t) ffi.PythonError!*PyObject {
     return futures.createRedisFuture("EXISTS", &state.future_types, args[0..@intCast(nargs)]);
 }
 fn redisPing(state: *ModuleState) ffi.PythonError!*PyObject {
     return futures.createRedisFuture("PING", &state.future_types, &.{});
 }
 
-fn pgExecute(state: *ModuleState, args: [*]const *PyObject, nargs: c.Py_ssize_t) ffi.PythonError!*PyObject {
+fn pgExecute(state: *ModuleState, args: [*]const *PyObject, nargs: ffi.Py_ssize_t) ffi.PythonError!*PyObject {
     return futures.createPgFuture(.execute, &state.future_types, args[0..@intCast(nargs)]);
 }
-fn pgFetchOne(state: *ModuleState, args: [*]const *PyObject, nargs: c.Py_ssize_t) ffi.PythonError!*PyObject {
+fn pgFetchOne(state: *ModuleState, args: [*]const *PyObject, nargs: ffi.Py_ssize_t) ffi.PythonError!*PyObject {
     return futures.createPgFuture(.fetch_one, &state.future_types, args[0..@intCast(nargs)]);
 }
-fn pgFetchAll(state: *ModuleState, args: [*]const *PyObject, nargs: c.Py_ssize_t) ffi.PythonError!*PyObject {
+fn pgFetchAll(state: *ModuleState, args: [*]const *PyObject, nargs: ffi.Py_ssize_t) ffi.PythonError!*PyObject {
     return futures.createPgFuture(.fetch_all, &state.future_types, args[0..@intCast(nargs)]);
 }
 
@@ -380,8 +379,8 @@ fn moduleFree(mod_ptr: ?*anyopaque) callconv(.c) void {
 }
 
 const module_slots = ffi.table(ffi.ModuleSlot, .{
-    ffi.moduleSlot(c.Py_mod_exec, moduleExec),
-    ffi.moduleSlot(c.Py_mod_multiple_interpreters, c.Py_MOD_PER_INTERPRETER_GIL_SUPPORTED),
+    ffi.moduleSlot(ffi.ModSlot.exec, moduleExec),
+    ffi.moduleSlot(ffi.ModSlot.multiple_interpreters, ffi.MOD_PER_INTERPRETER_GIL_SUPPORTED),
 });
 
 var module_def = ffi.moduleDef(

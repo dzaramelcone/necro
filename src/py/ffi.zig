@@ -55,6 +55,7 @@ pub fn isInt(obj: *PyObject) bool { return c.PyLong_Check(obj) != 0; }
 pub fn isBool(obj: *PyObject) bool { return c.PyBool_Check(obj) != 0; }
 pub fn isFloat(obj: *PyObject) bool { return c.PyFloat_Check(obj) != 0; }
 pub fn isList(obj: *PyObject) bool { return c.PyList_Check(obj) != 0; }
+pub fn isExactCoroutine(obj: *PyObject) bool { return c.PyCoro_CheckExact(obj) != 0; }
 
 pub fn longAsLongLong(obj: *PyObject) ?c_longlong {
     const result = c.PyLong_AsLongLong(obj);
@@ -148,6 +149,15 @@ pub const Slot = struct {
     pub const @"await" = c.Py_am_await;
     pub const mp_subscript = c.Py_mp_subscript;
 };
+
+pub const ModSlot = struct {
+    pub const exec = c.Py_mod_exec;
+    pub const multiple_interpreters = c.Py_mod_multiple_interpreters;
+};
+
+pub const MOD_PER_INTERPRETER_GIL_SUPPORTED = c.Py_MOD_PER_INTERPRETER_GIL_SUPPORTED;
+
+pub const Py_ssize_t = c.Py_ssize_t;
 
 pub const flags = struct {
     pub const DEFAULT: c_ulong = c.Py_TPFLAGS_DEFAULT;
@@ -501,6 +511,11 @@ pub fn errSetString(exc_type: *PyObject, message: [*:0]const u8) void {
     c.PyErr_SetString(exc_type, message);
 }
 
+/// Set a Python exception with an exception object as its value.
+pub fn errSetObject(exc_type: *PyObject, value: *PyObject) void {
+    c.PyErr_SetObject(exc_type, value);
+}
+
 /// Print and clear the current Python exception (to stderr).
 pub fn errPrint() void {
     c.PyErr_Print();
@@ -681,11 +696,11 @@ pub fn dictGetItemString(dict: *PyObject, key: [*:0]const u8) ?*PyObject {
 
 // ── List operations ─────────────────────────────────────────────────
 
-fn listNew(len: isize) PythonError!*PyObject {
+pub fn listNew(len: isize) PythonError!*PyObject {
     return c.PyList_New(len) orelse return error.PythonError;
 }
 
-fn listAppend(list: *PyObject, item: *PyObject) PythonError!void {
+pub fn listAppend(list: *PyObject, item: *PyObject) PythonError!void {
     if (c.PyList_Append(list, item) != 0) return error.PythonError;
 }
 
