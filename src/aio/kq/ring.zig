@@ -1,21 +1,21 @@
 const std = @import("std");
-const GenericPool = @import("../../pool.zig").Pool;
+const necro = @import("necro");
 
-pub const CAPACITY: usize = 64 * 1024;
+const CAPACITY: usize = 64 * 1024;
 
-pub const RecvBuffer = struct {
+const RecvBuffer = struct {
     data: [CAPACITY]u8 = undefined,
 };
 
-pub const RecvPool = GenericPool(RecvBuffer);
+pub const RecvPool = necro.core.Pool(RecvBuffer);
 
-pub const Writable = struct {
+const Writable = struct {
     offset: usize,
     slice: []u8,
 };
 
 pub const Ring = struct {
-    buf_idx: ?usize = null,
+    buf_lease: ?necro.core.Lease = null,
     buf: ?*RecvBuffer = null,
     read_pos: usize = 0,
     used_len: usize = 0,
@@ -23,15 +23,15 @@ pub const Ring = struct {
 
     pub fn ensure(self: *Ring, pool: *RecvPool) !void {
         if (self.buf != null) return;
-        const idx = try pool.borrow();
-        self.buf_idx = idx;
-        self.buf = pool.get(idx);
+        const lease = try pool.borrow();
+        self.buf_lease = lease;
+        self.buf = pool.get(lease);
     }
 
     pub fn deinit(self: *Ring, pool: *RecvPool) void {
-        if (self.buf_idx) |idx| {
-            pool.release(idx);
-            self.buf_idx = null;
+        if (self.buf_lease) |lease| {
+            pool.release(lease);
+            self.buf_lease = null;
             self.buf = null;
         }
         self.clear();
@@ -47,8 +47,8 @@ pub const Ring = struct {
         return CAPACITY;
     }
 
-    pub fn bufIdx(self: *const Ring) usize {
-        return self.buf_idx.?;
+    fn bufLease(self: *const Ring) necro.core.Lease {
+        return self.buf_lease.?;
     }
 
     pub fn parseOffset(self: *const Ring) usize {
@@ -67,6 +67,10 @@ pub const Ring = struct {
 
     fn data(self: *const Ring) *[CAPACITY]u8 {
         return &self.buf.?.data;
+    }
+
+    pub fn usedMut(self: *Ring) []u8 {
+        return self.data()[self.read_pos..][0..self.used_len];
     }
 
     pub fn writable(self: *Ring, pool: *RecvPool) !Writable {
@@ -118,7 +122,7 @@ pub const Ring = struct {
         return null;
     }
 
-    pub fn byteAt(self: *const Ring, logical_off: usize) u8 {
+    fn byteAt(self: *const Ring, logical_off: usize) u8 {
         std.debug.assert(logical_off < self.used_len);
         return self.data()[self.logicalIndex(logical_off)];
     }

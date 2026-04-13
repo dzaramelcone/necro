@@ -1,79 +1,33 @@
-//! kqueue backend — readiness notifications backed by per-backend pending slots.
-
 const std = @import("std");
 const posix = std.posix;
 const system = posix.system;
-const necro_log = @import("../log.zig");
+const necro = @import("necro");
+const necro_log = necro.core.log;
 
-const log = std.log.scoped(.@"necro/aio/kq");
+const log = std.log.scoped(.@"necro/aio/kq/sys");
 
-pub const Op = union(enum) {
-    accept: struct {
-        socket: std.posix.socket_t,
-    },
-    connect: struct {
-        socket: std.posix.socket_t,
-        addr: std.net.Address,
-    },
-    recv: struct {
-        socket: std.posix.socket_t,
-        buffer: []u8,
-    },
-    send: struct {
-        socket: std.posix.socket_t,
-        buffer: []const u8,
-    },
-    sendv: struct {
-        socket: std.posix.socket_t,
-        iovecs: []const std.posix.iovec_const,
-    },
-    close: std.posix.socket_t,
-    timer: struct {
-        seconds: u63,
-        nanos: u32,
-    },
-};
+pub const EventKind = enum { read, write };
 
-const OpTag = std.meta.Tag(Op);
-
-pub const Completion = struct {
-    op_tag: OpTag,
-    result: i32,
+pub const Event = struct {
+    token: *anyopaque,
+    kind: EventKind,
+    eof: bool,
+    is_wake: bool = false,
 };
 
 pub const Kqueue = struct {
-    const PendingSlot = struct {
-        in_use: bool = false,
-        token: *anyopaque = undefined,
-        op: Op = undefined,
-    };
-
     kqueue_fd: posix.fd_t,
     changes: []posix.Kevent,
     events: []posix.Kevent,
-    pending: []PendingSlot,
-    free_stack: []u16,
-    free_len: usize,
-    tokens_buf: []*anyopaque,
-    completion_buf: []Completion,
+    event_buf: []Event,
     change_count: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator, max_events: u16) !Kqueue {
-        const pending = try allocator.alloc(PendingSlot, max_events);
-        for (pending) |*slot| slot.* = .{};
-        const free_stack = try allocator.alloc(u16, max_events);
-        for (free_stack, 0..) |*slot, idx| {
-            slot.* = @intCast(max_events - idx - 1);
-        }
         return .{
             .kqueue_fd = try posix.kqueue(),
             .changes = try allocator.alloc(posix.Kevent, max_events),
             .events = try allocator.alloc(posix.Kevent, max_events),
-            .pending = pending,
-            .free_stack = free_stack,
-            .free_len = max_events,
-            .tokens_buf = try allocator.alloc(*anyopaque, max_events),
-            .completion_buf = try allocator.alloc(Completion, max_events),
+            .event_buf = try allocator.alloc(Event, max_events),
         };
     }
 
@@ -81,90 +35,89 @@ pub const Kqueue = struct {
         posix.close(self.kqueue_fd);
         allocator.free(self.changes);
         allocator.free(self.events);
-        allocator.free(self.pending);
-        allocator.free(self.free_stack);
-        allocator.free(self.tokens_buf);
-        allocator.free(self.completion_buf);
+        allocator.free(self.event_buf);
     }
 
-    pub fn queue(self: *Kqueue, token: *anyopaque, op: Op) !void {
-        log.debug("queue: {s}", .{@tagName(op)});
+    pub const WAKE_IDENT: usize = 0xB0B0B0B0;
 
+    pub fn wakeRegister(self: *Kqueue) !void {
+        const kev: posix.Kevent = .{
+            .ident = WAKE_IDENT,
+            .filter = system.EVFILT.USER,
+            .flags = system.EV.ADD | system.EV.CLEAR,
+            .fflags = 0,
+            .data = 0,
+            .udata = 0,
+        };
+        _ = try posix.kevent(self.kqueue_fd, &.{kev}, &.{}, null);
+    }
+
+    pub fn wakeTrigger(kqueue_fd: posix.fd_t) void {
+        const kev: posix.Kevent = .{
+            .ident = WAKE_IDENT,
+            .filter = system.EVFILT.USER,
+            .flags = 0,
+            .fflags = system.NOTE.TRIGGER,
+            .data = 0,
+            .udata = 0,
+        };
+        _ = posix.kevent(kqueue_fd, &.{kev}, &.{}, null) catch {};
+    }
+
+    pub fn arm(self: *Kqueue, fd: posix.socket_t, kind: EventKind, token: *anyopaque) !void {
         if (self.change_count >= self.changes.len) return error.Overflow;
-
-        switch (op) {
-            .accept => |inner| {
-                const slot_idx = try self.allocPending(token, op);
-                self.changes[self.change_count] = .{
-                    .ident = @intCast(inner.socket),
-                    .filter = system.EVFILT.READ,
-                    .flags = system.EV.ADD | system.EV.ONESHOT,
-                    .fflags = 0,
-                    .data = 0,
-                    .udata = @intCast(slot_idx + 1),
-                };
-                self.change_count += 1;
+        self.changes[self.change_count] = .{
+            .ident = @intCast(fd),
+            .filter = switch (kind) {
+                .read => system.EVFILT.READ,
+                .write => system.EVFILT.WRITE,
             },
-            .recv => |inner| {
-                const slot_idx = try self.allocPending(token, op);
-                self.changes[self.change_count] = .{
-                    .ident = @intCast(inner.socket),
-                    .filter = system.EVFILT.READ,
-                    .flags = system.EV.ADD | system.EV.ONESHOT,
-                    .fflags = 0,
-                    .data = 0,
-                    .udata = @intCast(slot_idx + 1),
-                };
-                self.change_count += 1;
-            },
-            .send => |inner| {
-                const slot_idx = try self.allocPending(token, op);
-                self.changes[self.change_count] = .{
-                    .ident = @intCast(inner.socket),
-                    .filter = system.EVFILT.WRITE,
-                    .flags = system.EV.ADD | system.EV.ONESHOT,
-                    .fflags = 0,
-                    .data = 0,
-                    .udata = @intCast(slot_idx + 1),
-                };
-                self.change_count += 1;
-            },
-            .sendv => |inner| {
-                const slot_idx = try self.allocPending(token, op);
-                self.changes[self.change_count] = .{
-                    .ident = @intCast(inner.socket),
-                    .filter = system.EVFILT.WRITE,
-                    .flags = system.EV.ADD | system.EV.ONESHOT,
-                    .fflags = 0,
-                    .data = 0,
-                    .udata = @intCast(slot_idx + 1),
-                };
-                self.change_count += 1;
-            },
-            .connect => |inner| {
-                const slot_idx = try self.allocPending(token, op);
-                self.changes[self.change_count] = .{
-                    .ident = @intCast(inner.socket),
-                    .filter = system.EVFILT.WRITE,
-                    .flags = system.EV.ADD | system.EV.ONESHOT,
-                    .fflags = 0,
-                    .data = 0,
-                    .udata = @intCast(slot_idx + 1),
-                };
-                self.change_count += 1;
-            },
-            .close => |fd| {
-                posix.close(fd);
-            },
-            .timer => {},
-        }
+            .flags = system.EV.ADD | system.EV.CLEAR,
+            .fflags = 0,
+            .data = 0,
+            .udata = @intFromPtr(token),
+        };
+        self.change_count += 1;
     }
 
-    pub fn submitAndWait(self: *Kqueue, wait_nr: u32) !struct { tokens: []*anyopaque, completions: []Completion } {
+    pub fn disarm(self: *Kqueue, fd: posix.socket_t) void {
+        if (self.change_count + 2 > self.changes.len) return;
+        self.changes[self.change_count] = .{
+            .ident = @intCast(fd),
+            .filter = system.EVFILT.READ,
+            .flags = system.EV.DELETE,
+            .fflags = 0,
+            .data = 0,
+            .udata = 0,
+        };
+        self.change_count += 1;
+        self.changes[self.change_count] = .{
+            .ident = @intCast(fd),
+            .filter = system.EVFILT.WRITE,
+            .flags = system.EV.DELETE,
+            .fflags = 0,
+            .data = 0,
+            .udata = 0,
+        };
+        self.change_count += 1;
+    }
+
+    pub fn wait(self: *Kqueue, wait_nr: u32, timeout_ns: ?i64) ![]Event {
         necro_log.bumpLoop();
 
-        const timeout_spec: posix.timespec = .{ .sec = 0, .nsec = 0 };
-        const timeout: ?*const posix.timespec = if (wait_nr == 0) &timeout_spec else null;
+        const zero_spec: posix.timespec = .{ .sec = 0, .nsec = 0 };
+        const bounded_spec: posix.timespec = if (timeout_ns) |ns| blk: {
+            const clamped: i64 = if (ns < 0) 0 else ns;
+            break :blk .{
+                .sec = @intCast(@divFloor(clamped, std.time.ns_per_s)),
+                .nsec = @intCast(@mod(clamped, std.time.ns_per_s)),
+            };
+        } else zero_spec;
+        const timeout: ?*const posix.timespec = blk: {
+            if (wait_nr == 0) break :blk &zero_spec;
+            if (timeout_ns != null) break :blk &bounded_spec;
+            break :blk null;
+        };
 
         const changes = self.changes[0..self.change_count];
         if (self.change_count > 0)
@@ -174,66 +127,20 @@ pub const Kqueue = struct {
         self.change_count = 0;
         log.debug("kevent: reaped {d} events", .{event_count});
 
-        var result_count: usize = 0;
+        var count: usize = 0;
         for (self.events[0..event_count]) |event| {
-            const slot_idx: usize = @intCast(event.udata - 1);
-            const slot = &self.pending[slot_idx];
-            defer self.releasePending(slot_idx);
+            if (event.flags & system.EV.ERROR != 0) continue;
 
-            self.tokens_buf[result_count] = slot.token;
-            self.completion_buf[result_count] = .{
-                .op_tag = std.meta.activeTag(slot.op),
-                .result = performIo(slot.op),
+            const is_wake = event.filter == system.EVFILT.USER;
+            self.event_buf[count] = .{
+                .token = if (is_wake) undefined else @ptrFromInt(event.udata),
+                .kind = if (event.filter == system.EVFILT.READ) .read else .write,
+                .eof = event.flags & system.EV.EOF != 0,
+                .is_wake = is_wake,
             };
-            result_count += 1;
+            count += 1;
         }
 
-        return .{
-            .tokens = self.tokens_buf[0..result_count],
-            .completions = self.completion_buf[0..result_count],
-        };
-    }
-
-    fn allocPending(self: *Kqueue, token: *anyopaque, op: Op) !usize {
-        if (self.free_len == 0) return error.Overflow;
-        self.free_len -= 1;
-        const idx = self.free_stack[self.free_len];
-        self.pending[idx] = .{ .in_use = true, .token = token, .op = op };
-        return idx;
-    }
-
-    fn releasePending(self: *Kqueue, idx: usize) void {
-        std.debug.assert(idx < self.pending.len);
-        std.debug.assert(self.pending[idx].in_use);
-        self.pending[idx] = .{};
-        self.free_stack[self.free_len] = @intCast(idx);
-        self.free_len += 1;
-    }
-
-    /// Perform the syscall that kqueue said is ready.
-    fn performIo(op: Op) i32 {
-        switch (op) {
-            .accept => |inner| {
-                var addr: posix.sockaddr = undefined;
-                var addr_len: posix.socklen_t = @sizeOf(posix.sockaddr);
-                const rc = system.accept(inner.socket, &addr, @ptrCast(&addr_len));
-                return @intCast(rc);
-            },
-            .recv => |inner| {
-                const rc = system.recvfrom(inner.socket, inner.buffer.ptr, inner.buffer.len, 0, null, null);
-                return @intCast(rc);
-            },
-            .send => |inner| {
-                const rc = system.sendto(inner.socket, inner.buffer.ptr, inner.buffer.len, 0, null, 0);
-                return @intCast(rc);
-            },
-            .sendv => |inner| {
-                const rc = system.writev(inner.socket, inner.iovecs.ptr, @intCast(inner.iovecs.len));
-                return @intCast(rc);
-            },
-            .connect => return 0,
-            .close => return 0,
-            .timer => return 0,
-        }
+        return self.event_buf[0..count];
     }
 };
