@@ -3,26 +3,21 @@ const posix = std.posix;
 const system = posix.system;
 const necro = @import("necro");
 const necro_log = necro.core.log;
+const sys = @import("sys.zig");
 
-const log = std.log.scoped(.@"necro/aio/kq/sys");
+const log = std.log.scoped(.@"necro/aio/readiness/kq");
 
-pub const EventKind = enum { read, write };
+const EventKind = sys.EventKind;
+const Event = sys.Event;
 
-pub const Event = struct {
-    token: *anyopaque,
-    kind: EventKind,
-    eof: bool,
-    is_wake: bool = false,
-};
-
-pub const Kqueue = struct {
+pub const Backend = struct {
     kqueue_fd: posix.fd_t,
     changes: []posix.Kevent,
     events: []posix.Kevent,
     event_buf: []Event,
     change_count: usize = 0,
 
-    pub fn init(allocator: std.mem.Allocator, max_events: u16) !Kqueue {
+    pub fn init(allocator: std.mem.Allocator, max_events: u16) !Backend {
         return .{
             .kqueue_fd = try posix.kqueue(),
             .changes = try allocator.alloc(posix.Kevent, max_events),
@@ -31,16 +26,16 @@ pub const Kqueue = struct {
         };
     }
 
-    pub fn deinit(self: *Kqueue, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *Backend, allocator: std.mem.Allocator) void {
         posix.close(self.kqueue_fd);
         allocator.free(self.changes);
         allocator.free(self.events);
         allocator.free(self.event_buf);
     }
 
-    pub const WAKE_IDENT: usize = 0xB0B0B0B0;
+    const WAKE_IDENT: usize = 0xB0B0B0B0;
 
-    pub fn wakeRegister(self: *Kqueue) !void {
+    pub fn wakeRegister(self: *Backend) !void {
         const kev: posix.Kevent = .{
             .ident = WAKE_IDENT,
             .filter = system.EVFILT.USER,
@@ -52,7 +47,7 @@ pub const Kqueue = struct {
         _ = try posix.kevent(self.kqueue_fd, &.{kev}, &.{}, null);
     }
 
-    pub fn wakeTrigger(kqueue_fd: posix.fd_t) void {
+    pub fn wake(self: *const Backend) void {
         const kev: posix.Kevent = .{
             .ident = WAKE_IDENT,
             .filter = system.EVFILT.USER,
@@ -61,10 +56,10 @@ pub const Kqueue = struct {
             .data = 0,
             .udata = 0,
         };
-        _ = posix.kevent(kqueue_fd, &.{kev}, &.{}, null) catch {};
+        _ = posix.kevent(self.kqueue_fd, &.{kev}, &.{}, null) catch {};
     }
 
-    pub fn arm(self: *Kqueue, fd: posix.socket_t, kind: EventKind, token: *anyopaque) !void {
+    pub fn arm(self: *Backend, fd: posix.socket_t, kind: EventKind, token: *anyopaque) !void {
         if (self.change_count >= self.changes.len) return error.Overflow;
         self.changes[self.change_count] = .{
             .ident = @intCast(fd),
@@ -80,7 +75,20 @@ pub const Kqueue = struct {
         self.change_count += 1;
     }
 
-    pub fn disarm(self: *Kqueue, fd: posix.socket_t) void {
+    pub fn disarmWrite(self: *Backend, fd: posix.socket_t) !void {
+        if (self.change_count >= self.changes.len) return error.Overflow;
+        self.changes[self.change_count] = .{
+            .ident = @intCast(fd),
+            .filter = system.EVFILT.WRITE,
+            .flags = system.EV.DELETE,
+            .fflags = 0,
+            .data = 0,
+            .udata = 0,
+        };
+        self.change_count += 1;
+    }
+
+    pub fn disarm(self: *Backend, fd: posix.socket_t) void {
         if (self.change_count + 2 > self.changes.len) return;
         self.changes[self.change_count] = .{
             .ident = @intCast(fd),
@@ -102,7 +110,7 @@ pub const Kqueue = struct {
         self.change_count += 1;
     }
 
-    pub fn wait(self: *Kqueue, wait_nr: u32, timeout_ns: ?i64) ![]Event {
+    pub fn wait(self: *Backend, wait_nr: u32, timeout_ns: ?i64) ![]Event {
         necro_log.bumpLoop();
 
         const zero_spec: posix.timespec = .{ .sec = 0, .nsec = 0 };
