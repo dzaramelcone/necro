@@ -96,7 +96,7 @@ pub fn run(allocator: std.mem.Allocator, server: *const Server, module_name: []c
     const rises = if (num_threads == 1) "s" else "";
     std.debug.print(
         \\
-        \\⛧   necro v{s} · pid {d}
+        \\⛧   necro v{s} · pid {d} · {s}
         \\    {s}://{s}:{d}/
         \\
         \\    Screaming souls arise from your gutteral incantations!
@@ -106,6 +106,7 @@ pub fn run(allocator: std.mem.Allocator, server: *const Server, module_name: []c
     , .{
         version,
         std.c.getpid(),
+        @import("aio/mod.zig").backend_name,
         "http",
         server.host,
         server.port,

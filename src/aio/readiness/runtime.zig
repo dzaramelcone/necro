@@ -6,7 +6,7 @@
 
 const std = @import("std");
 const posix = std.posix;
-const kqueue = @import("sys.zig");
+const sys = @import("sys.zig");
 const ring = @import("ring.zig");
 const RecvPool = ring.RecvPool;
 const Ring = ring.Ring;
@@ -27,7 +27,7 @@ const SmallPool = core.Pool(core.SmallSlab);
 const BigPool = core.RefCountedPool(core.BigSlab);
 const pg_stream = necro_pg.stream.Stream(Ring);
 
-const log = std.log.scoped(.@"necro/aio/kq/runtime");
+const log = std.log.scoped(.@"necro/aio/readiness/runtime");
 
 const MAX_IOVECS = 4;
 const RECV_BUFFER_COUNT = 1024;
@@ -88,7 +88,7 @@ pub const PgConn = struct {
 };
 
 pub const Pipeline = struct {
-    backend: kqueue.Kqueue,
+    backend: sys.Backend,
     conns: *core.Pool(Conn),
     allocator: std.mem.Allocator,
     running: bool = true,
@@ -135,7 +135,7 @@ pub const Pipeline = struct {
     pg_wire_ns: u64 = 0,
 
     pub fn init(self: *Pipeline, allocator: std.mem.Allocator, conns: *core.Pool(Conn), entries: u16, router: *const http.Router, py_ctx: *driver.PyContext, idle_ms: i64) !void {
-        var backend = try kqueue.Kqueue.init(allocator, entries);
+        var backend = try sys.Backend.init(allocator, entries);
         errdefer backend.deinit(allocator);
 
         var http_recv_pool = try RecvPool.init(allocator, RECV_BUFFER_COUNT);
@@ -183,7 +183,7 @@ pub const Pipeline = struct {
     }
 
     pub fn wake(self: *Pipeline) void {
-        kqueue.Kqueue.wakeTrigger(self.backend.kqueue_fd);
+        self.backend.wake();
     }
 
     pub fn run(self: *Pipeline) !void {
@@ -288,7 +288,7 @@ pub const Pipeline = struct {
     pub fn onAcceptable(self: *Pipeline) !void {
         if (necro.server.shutdown_flag.load(.acquire)) return;
         while (true) {
-            const fd = posix.accept(self.listen_fd, null, null, 0) catch |err| switch (err) {
+            const fd = posix.accept(self.listen_fd, null, null, posix.SOCK.NONBLOCK | posix.SOCK.CLOEXEC) catch |err| switch (err) {
                 error.WouldBlock => break,
                 else => return err,
             };
@@ -630,6 +630,7 @@ pub const Pipeline = struct {
         self.redis_send_len = 0;
         self.redis_send_offset = 0;
         self.redis_send_state = .idle;
+        try self.backend.disarmWrite(fd);
     }
 
     pub fn onRedisReadable(self: *Pipeline) !void {
@@ -782,7 +783,7 @@ pub const Pipeline = struct {
         log.info("redis socket fd={d}", .{fd});
     }
 
-    pub fn onPgWritable(_: *Pipeline, pg: *PgConn) !void {
+    pub fn onPgWritable(self: *Pipeline, pg: *PgConn) !void {
         while (pg.send_offset < pg.send_len) {
             const buf = pg.send_buf[pg.send_offset..pg.send_len];
             const n = posix.send(pg.fd, buf, 0) catch |err| switch (err) {
@@ -801,6 +802,7 @@ pub const Pipeline = struct {
         pg.send_len = 0;
         pg.send_offset = 0;
         pg.send_state = .idle;
+        try self.backend.disarmWrite(pg.fd);
     }
 
     pub fn onPgReadable(self: *Pipeline, pg: *PgConn) !void {

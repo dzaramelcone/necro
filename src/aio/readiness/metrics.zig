@@ -2,7 +2,7 @@ const std = @import("std");
 const necro = @import("necro");
 const shared = necro.core.metrics;
 
-const log = std.log.scoped(.@"necro/aio/kq/metrics");
+const log = std.log.scoped(.@"necro/aio/readiness/metrics");
 
 pub const Metrics = struct {
     /// kevent batch size histogram: <32, 32-63, 64-127, 128-255, 256-511, 512+
