@@ -12,3 +12,4 @@ pub const Queue = queue.Queue;
 pub const BatchQueue = queue.BatchQueue;
 
 pub const log = @import("log.zig");
+pub const metrics = @import("metrics.zig");
