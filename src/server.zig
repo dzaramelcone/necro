@@ -58,6 +58,7 @@ pub const Server = struct {
     port: u16,
     num_threads: u16,
     backlog: u31,
+    idle_ms: i64,
 
     pub fn init(alloc: std.mem.Allocator, host: []const u8, port: u16) Server {
         return .{
@@ -66,6 +67,7 @@ pub const Server = struct {
             .port = port,
             .num_threads = 1,
             .backlog = 2048,
+            .idle_ms = 30_000,
         };
     }
 
@@ -167,7 +169,7 @@ fn pipelineThreadMain(allocator: std.mem.Allocator, server: *const Server, exist
 
     const pl = try allocator.create(runtime.Pipeline);
     defer allocator.destroy(pl);
-    try pl.init(allocator, &conns, 1024, &server.router, &worker_py);
+    try pl.init(allocator, &conns, 1024, &server.router, &worker_py, server.idle_ms);
 
     const redis_host = std.posix.getenv("REDIS_HOST") orelse "127.0.0.1";
     const redis_fd = connectTcpNonBlocking(redis_host, 6379) catch |err| blk: {
