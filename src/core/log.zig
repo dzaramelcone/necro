@@ -1,18 +1,12 @@
 //! Custom log function for necro.
-//!
-//! Format: [timestamp] [t:thread_id] [loop:N] [LEVEL] scope | message
-//! debug level is stripped in ReleaseFast (zero cost).
-//!
-//! The loop counter tracks event loop iterations (reap cycles).
-//! Call bumpLoop() from the reap point to increment it.
-//!
-//! Log lines are capped at 4096 bytes to preserve POSIX PIPE_BUF atomicity —
-//! writes at or below PIPE_BUF will not interleave with other threads' writes
-//! when stderr is piped. Oversized lines are dropped rather than split.
 
 const std = @import("std");
 
-const prefix_fmt = "[{d}] [t:{d}] [loop:{d}] [{s}] {s} | ";
+const c = @cImport({
+    @cInclude("time.h");
+});
+
+const prefix_fmt = "[{s}] [t:{d}] [loop:{d}] [{s}] {s} | ";
 
 threadlocal var loop_count: u64 = 0;
 
@@ -20,8 +14,19 @@ pub fn bumpLoop() void {
     loop_count += 1;
 }
 
-pub fn getLoopCount() u64 {
-    return loop_count;
+fn formatTimestamp(buf: *[24]u8, ms: i64) []const u8 {
+    const secs: c.time_t = @intCast(@divFloor(ms, 1000));
+    const millis: u16 = @intCast(@mod(ms, 1000));
+
+    var tm: c.struct_tm = undefined;
+    if (c.gmtime_r(&secs, &tm) == null) return buf[0..0];
+
+    const n = c.strftime(buf, buf.len, "%Y-%m-%dT%H:%M:%S", &tm);
+    if (n == 0) return buf[0..0];
+
+    var w = std.Io.Writer.fixed(buf[n..]);
+    w.print(".{d:0>3}Z", .{millis}) catch {};
+    return buf[0 .. n + w.buffered().len];
 }
 
 pub fn logFn(
@@ -33,8 +38,11 @@ pub fn logFn(
     const level_name = comptime @tagName(level);
     const scope_name = if (@tagName(scope).len > 0) @tagName(scope) else "necro";
 
+    var ts_buf: [24]u8 = undefined;
+    const ts = formatTimestamp(&ts_buf, std.time.milliTimestamp());
+
     const prefix_args = .{
-        std.time.milliTimestamp(),
+        ts,
         std.Thread.getCurrentId(),
         loop_count,
         level_name,

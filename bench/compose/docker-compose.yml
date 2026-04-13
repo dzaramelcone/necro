@@ -1,0 +1,40 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: necro
+      POSTGRES_PASSWORD: necro
+      POSTGRES_DB: necro
+      POSTGRES_HOST_AUTH_METHOD: md5
+      POSTGRES_INITDB_ARGS: "--auth-host=md5"
+  bench:
+    build: .
+    ports:
+      - "8080:8080"
+    working_dir: /bench
+    command: sleep infinity
+    privileged: true
+    depends_on:
+      - postgres
+    environment:
+      PG_HOST: postgres
+      PG_PORT: "5432"
+      PG_USER: necro
+      PG_PASS: necro
+      PG_DB: necro
+    volumes:
+      - ../../python:/bench/necro_root
+      - ../../zig-out/lib:/bench/necro_lib:ro
+      - ./app.py:/bench/app.py:ro
+      - ./bench_hello.py:/bench/bench_hello.py:ro
+      - ./bench_plaintext.py:/bench/bench_plaintext.py:ro
+      - ./bench_db.py:/bench/bench_db.py:ro
+      - ./bench_fastapi.py:/bench/bench_fastapi.py:ro
+      - ./bench_starlette.py:/bench/bench_starlette.py:ro
+      - ./bench_litestar.py:/bench/bench_litestar.py:ro
+      - ./bench_asgi_raw.py:/bench/bench_asgi_raw.py:ro
+      - ./nginx.conf:/bench/nginx.conf:ro
+      - ./main.go:/bench/main.go:ro
+      - ./fasthttp_main.go:/bench/fasthttp_main.go:ro
+      - ./pipeline.lua:/bench/pipeline.lua:ro
+      - ./run_bench_one.sh:/bench/run_bench_one.sh:ro

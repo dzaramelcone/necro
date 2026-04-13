@@ -1,19 +1,19 @@
-//! Necro — Python extension module entry point.
-//!
-//! This file is the root of the `core.so` shared library inside the `necro`
-//! Python package. Python's extension loader finds `PyInit_core` as a C symbol
-//! in the .so at import time;
-//! the comptime reference below keeps the linker from stripping it under
-//! LTO + --gc-sections.
+//! Necro - Python extension module entry point.
 
 const std = @import("std");
-const log = @import("log.zig");
-const module = @import("python/module.zig");
+pub const py = @import("py/mod.zig");
+pub const http = @import("http/mod.zig");
+pub const aio = @import("aio/mod.zig");
+pub const core = @import("core/mod.zig");
+pub const pg = @import("pg/mod.zig");
+pub const json = @import("json/serialize.zig");
+pub const redis = @import("redis/resp.zig");
+pub const server = @import("server.zig");
 
 pub const std_options: std.Options = .{
-    .logFn = log.logFn,
+    .logFn = core.log.logFn,
 };
 
 comptime {
-    _ = &module.PyInit_core;
+    @export(&py.module.pyInitCore, .{ .name = "PyInit_core", .linkage = .strong });
 }
