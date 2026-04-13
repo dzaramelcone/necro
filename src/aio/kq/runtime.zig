@@ -132,6 +132,7 @@ pub const Pipeline = struct {
 
     stats: metrics.Stats = .{},
     backend_stats: backend_metrics.Metrics = .{},
+    pg_wire_ns: u64 = 0,
 
     pub fn init(self: *Pipeline, allocator: std.mem.Allocator, conns: *core.Pool(Conn), entries: u16, router: *const http.Router, py_ctx: *driver.PyContext, idle_ms: i64) !void {
         var backend = try kqueue.Kqueue.init(allocator, entries);
@@ -341,7 +342,7 @@ pub const Pipeline = struct {
             }
             received_any = true;
             conn.recv.noteReceived(n);
-            const w = conn.recv.writable(&self.http_recv_pool) catch {};
+            const w = try conn.recv.writable(&self.http_recv_pool);
             conn.recv_slice = w.slice;
         }
         if (received_any) self.idle.bump(&conn.idle, self.cycle_now_ns);
@@ -1115,8 +1116,6 @@ pub const Pipeline = struct {
     pub fn setPgConn(self: *Pipeline, fd: posix.socket_t) !void {
         if (self.pg_conn != null) return error.PgConnAlreadySet;
 
-        const flags = try posix.fcntl(fd, posix.F.GETFL, 0);
-        _ = try posix.fcntl(fd, posix.F.SETFL, flags | O_NONBLOCK);
         const lease = try self.big_pool.borrow();
         errdefer self.big_pool.release(lease);
         const body = self.big_pool.get(lease);

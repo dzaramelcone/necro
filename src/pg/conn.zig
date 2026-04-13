@@ -1,13 +1,15 @@
-//! Postgres client: blocking TCP/Unix connect with startup and auth handshake.
-//! The resulting fd is handed off to the pipeline for async query execution.
+//! Postgres client: TCP/Unix connect + startup/auth handshake.
 
-// TODO: Reconnect, nonblocking connect, etc
+// TODO: Reconnect, etc
 
 const std = @import("std");
 const mem = std.mem;
 const posix = std.posix;
 const wire = @import("wire.zig");
 const auth = @import("auth.zig");
+
+const CONNECT_TIMEOUT_MS: i32 = 5_000;
+const HANDSHAKE_IO_TIMEOUT_MS: i32 = 5_000;
 
 pub const Client = struct {
     const read_buf_size = 8192;
@@ -51,21 +53,47 @@ pub const Client = struct {
         var addr: posix.sockaddr.un = .{ .family = posix.AF.UNIX, .path = undefined };
         const path = try std.fmt.bufPrint(&path_buf, "{s}/.s.PGSQL.{d}\x00", .{ dir, port });
         @memcpy(addr.path[0..path.len], path[0..path.len]);
-        const fd = try posix.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0);
+        const sock_flags = posix.SOCK.STREAM | posix.SOCK.NONBLOCK | posix.SOCK.CLOEXEC;
+        const fd = try posix.socket(posix.AF.UNIX, sock_flags, 0);
         errdefer posix.close(fd);
-        try posix.connect(fd, @ptrCast(&addr), @sizeOf(posix.sockaddr.un));
+        try finishConnect(fd, @ptrCast(&addr), @sizeOf(posix.sockaddr.un));
         return fd;
     }
 
     fn connectTcp(host: []const u8, port: u16) !posix.socket_t {
-        const stream = try std.net.tcpConnectToHost(std.heap.page_allocator, host, port);
-        return stream.handle;
+        const list = try std.net.getAddressList(std.heap.page_allocator, host, port);
+        defer list.deinit();
+        if (list.addrs.len == 0) return error.UnknownHostName;
+
+        const addr = list.addrs[0];
+        const sock_flags = posix.SOCK.STREAM | posix.SOCK.NONBLOCK | posix.SOCK.CLOEXEC;
+        const fd = try posix.socket(addr.any.family, sock_flags, posix.IPPROTO.TCP);
+        errdefer posix.close(fd);
+        try finishConnect(fd, &addr.any, addr.getOsSockLen());
+        return fd;
+    }
+
+    fn finishConnect(fd: posix.socket_t, addr: *const posix.sockaddr, addr_len: posix.socklen_t) !void {
+        posix.connect(fd, addr, addr_len) catch |err| switch (err) {
+            error.WouldBlock => {},
+            else => return err,
+        };
+        var pfd = [_]posix.pollfd{.{ .fd = fd, .events = posix.POLL.OUT, .revents = 0 }};
+        const n = try posix.poll(&pfd, CONNECT_TIMEOUT_MS);
+        if (n == 0) return error.ConnectionTimedOut;
+        try posix.getsockoptError(fd);
     }
 
     fn sendAll(self: *Client, data: []const u8) !void {
         var sent: usize = 0;
         while (sent < data.len) {
-            const n = try posix.write(self.fd, data[sent..]);
+            const n = posix.write(self.fd, data[sent..]) catch |err| switch (err) {
+                error.WouldBlock => {
+                    try waitFor(self.fd, posix.POLL.OUT);
+                    continue;
+                },
+                else => return err,
+            };
             if (n == 0) return error.ConnectionRefused;
             sent += n;
         }
@@ -74,10 +102,22 @@ pub const Client = struct {
     fn readExact(self: *Client, buf: []u8) !void {
         var total: usize = 0;
         while (total < buf.len) {
-            const n = try posix.read(self.fd, buf[total..]);
+            const n = posix.read(self.fd, buf[total..]) catch |err| switch (err) {
+                error.WouldBlock => {
+                    try waitFor(self.fd, posix.POLL.IN);
+                    continue;
+                },
+                else => return err,
+            };
             if (n == 0) return error.ConnectionRefused;
             total += n;
         }
+    }
+
+    fn waitFor(fd: posix.socket_t, events: i16) !void {
+        var pfd = [_]posix.pollfd{.{ .fd = fd, .events = events, .revents = 0 }};
+        const n = try posix.poll(&pfd, HANDSHAKE_IO_TIMEOUT_MS);
+        if (n == 0) return error.ConnectionTimedOut;
     }
 
     fn readBackendMessage(self: *Client) !BackendMessage {
