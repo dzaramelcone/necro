@@ -6,7 +6,7 @@ const builtin = @import("builtin");
 
 pub const SerializeError = error{BufferOverflow};
 
-pub const vec_len = std.simd.suggestVectorLength(u8) orelse 0;
+const vec_len = std.simd.suggestVectorLength(u8) orelse 0;
 const VecU8 = if (vec_len > 0) @Vector(vec_len, u8) else void;
 
 fn repeatByte8(comptime b: u8) u64 {
@@ -120,7 +120,7 @@ pub fn writeJsonEscaped(output: []u8, input: []const u8) SerializeError!usize {
     return dst;
 }
 
-pub fn writeJsonEscapedSpeculative(output: []u8, input: []const u8) SerializeError!usize {
+fn writeJsonEscapedSpeculative(output: []u8, input: []const u8) SerializeError!usize {
     var src: usize = 0;
     var dst: usize = 0;
     const n = input.len;
@@ -198,7 +198,7 @@ pub fn writeJsonEscapedSpeculative(output: []u8, input: []const u8) SerializeErr
     return dst;
 }
 
-pub fn writeJsonString(output: []u8, input: []const u8) SerializeError!usize {
+fn writeJsonString(output: []u8, input: []const u8) SerializeError!usize {
     if (output.len < 2) return error.BufferOverflow;
     output[0] = '"';
     const content_len = try writeJsonEscapedSpeculative(output[1..], input);
@@ -497,7 +497,7 @@ test "writeJsonEscaped: buffer overflow" {
     try std.testing.expectError(SerializeError.BufferOverflow, result);
 }
 
-pub fn writeJsonEscapedScalar(output: []u8, input: []const u8) SerializeError!usize {
+fn writeJsonEscapedScalar(output: []u8, input: []const u8) SerializeError!usize {
     var dst: usize = 0;
     for (input) |c| {
         if (c >= 0x20 and c != '"' and c != '\\') {
