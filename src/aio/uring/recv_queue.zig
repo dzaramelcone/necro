@@ -1,7 +1,7 @@
 const std = @import("std");
 const recv_group = @import("recv_group.zig");
 
-pub const DEFAULT_MAX_BYTES = @as(usize, recv_group.DEFAULT_BUFFER_SIZE) * @as(usize, recv_group.DEFAULT_BUFFER_COUNT);
+const DEFAULT_MAX_BYTES = @as(usize, recv_group.DEFAULT_BUFFER_SIZE) * @as(usize, recv_group.DEFAULT_BUFFER_COUNT);
 
 const MAX_SEGMENTS = recv_group.DEFAULT_BUFFER_COUNT;
 
@@ -48,7 +48,7 @@ pub const Queue = struct {
         return self.used_len;
     }
 
-    pub fn segmentCount(self: *const Queue) usize {
+    fn segmentCount(self: *const Queue) usize {
         return self.seg_count;
     }
 
@@ -130,7 +130,7 @@ pub const Queue = struct {
         return seg.slice()[loc.seg_off..];
     }
 
-    pub fn byteAt(self: *const Queue, logical_off: usize) u8 {
+    fn byteAt(self: *const Queue, logical_off: usize) u8 {
         std.debug.assert(logical_off < self.used_len);
         const loc = self.locate(logical_off);
         return self.segments[loc.seg_idx].slice()[loc.seg_off];

@@ -1,10 +1,11 @@
-//! io_uring backend — backend-owned pending slots with decoded CQE metadata.
+//! io_uring backend - backend-owned pending slots with decoded CQE metadata.
 
 const std = @import("std");
 const linux = std.os.linux;
 const posix = std.posix;
-const necro_log = @import("../log.zig");
-const ring = @import("ring.zig");
+const necro = @import("necro");
+const necro_log = necro.core.log;
+const uring_ring = @import("ring.zig");
 
 const log = std.log.scoped(.@"necro/aio/uring/sys");
 const ring_base_flags = linux.IORING_SETUP_SINGLE_ISSUER | linux.IORING_SETUP_DEFER_TASKRUN;
@@ -12,15 +13,12 @@ const ring_tuned_flags = ring_base_flags | linux.IORING_SETUP_CQE32;
 const ring_sqpoll_idle_ms: u32 = 2000;
 
 pub const Op = union(enum) {
-    accept: struct {
-        socket: std.posix.socket_t,
-    },
     accept_multishot: struct {
         socket: std.posix.socket_t,
     },
-    connect: struct {
-        socket: std.posix.socket_t,
-        addr: std.net.Address,
+    read: struct {
+        fd: std.posix.fd_t,
+        buffer: []u8,
     },
     recv: struct {
         socket: std.posix.socket_t,
@@ -35,12 +33,6 @@ pub const Op = union(enum) {
         socket: std.posix.socket_t,
         buffer: []const u8,
     },
-    send_zc: struct {
-        socket: std.posix.socket_t,
-        buffer: []const u8,
-        send_flags: u32 = 0,
-        zc_flags: u16 = 0,
-    },
     sendmsg_zc: struct {
         socket: std.posix.socket_t,
         msg: *const posix.msghdr_const,
@@ -49,11 +41,6 @@ pub const Op = union(enum) {
     sendv: struct {
         socket: std.posix.socket_t,
         iovecs: []const std.posix.iovec_const,
-    },
-    close: std.posix.socket_t,
-    timer: struct {
-        seconds: u63,
-        nanos: u32,
     },
 };
 
@@ -84,13 +71,13 @@ pub const IoUring = struct {
         kind: PendingKind = .oneshot,
     };
 
-    ring: ring.Ring,
+    ring: uring_ring.Ring,
     pending: []PendingSlot,
     free_stack: []u16,
     free_len: usize,
     tokens_buf: []*anyopaque,
     completion_buf: []Completion,
-    cqe_buf: []ring.Cqe,
+    cqe_buf: []uring_ring.Cqe,
 
     pub fn init(allocator: std.mem.Allocator, entries: u16) !IoUring {
         const ring = try initRingWithFallbacks(entries);
@@ -108,7 +95,7 @@ pub const IoUring = struct {
             .free_len = entries,
             .tokens_buf = try allocator.alloc(*anyopaque, entries),
             .completion_buf = try allocator.alloc(Completion, entries),
-            .cqe_buf = try allocator.alloc(ring.Cqe, entries),
+            .cqe_buf = try allocator.alloc(uring_ring.Cqe, entries),
         };
     }
 
@@ -127,14 +114,14 @@ pub const IoUring = struct {
         errdefer self.releasePending(slot_idx);
         const udata: u64 = slot_idx + 1;
         switch (op) {
-            .accept => |inner| {
-                const sqe = try self.ring.getSqe();
-                sqe.prep_accept(inner.socket, null, null, 0);
-                sqe.user_data = udata;
-            },
             .accept_multishot => |inner| {
                 const sqe = try self.ring.getSqe();
                 sqe.prep_multishot_accept(inner.socket, null, null, 0);
+                sqe.user_data = udata;
+            },
+            .read => |inner| {
+                const sqe = try self.ring.getSqe();
+                sqe.prep_read(inner.fd, inner.buffer, 0);
                 sqe.user_data = udata;
             },
             .recv => |inner| {
@@ -156,11 +143,6 @@ pub const IoUring = struct {
                 sqe.prep_send(inner.socket, inner.buffer, 0);
                 sqe.user_data = udata;
             },
-            .send_zc => |inner| {
-                const sqe = try self.ring.getSqe();
-                sqe.prep_send_zc(inner.socket, inner.buffer, inner.send_flags, inner.zc_flags);
-                sqe.user_data = udata;
-            },
             .sendmsg_zc => |inner| {
                 const sqe = try self.ring.getSqe();
                 sqe.prep_sendmsg_zc(inner.socket, inner.msg, inner.send_flags);
@@ -169,23 +151,6 @@ pub const IoUring = struct {
             .sendv => |inner| {
                 const sqe = try self.ring.getSqe();
                 sqe.prep_writev(inner.socket, inner.iovecs, 0);
-                sqe.user_data = udata;
-            },
-            .connect => |inner| {
-                var addr = inner.addr;
-                const sqe = try self.ring.getSqe();
-                sqe.prep_connect(inner.socket, &addr.any, addr.getOsSockLen());
-                sqe.user_data = udata;
-            },
-            .close => |fd| {
-                const sqe = try self.ring.getSqe();
-                sqe.prep_close(fd);
-                sqe.user_data = udata;
-            },
-            .timer => |inner| {
-                const ts: linux.kernel_timespec = .{ .sec = inner.seconds, .nsec = inner.nanos };
-                const sqe = try self.ring.getSqe();
-                sqe.prep_timeout(&ts, 0, 0);
                 sqe.user_data = udata;
             },
         }
@@ -207,11 +172,9 @@ pub const IoUring = struct {
 
     pub fn reap(self: *IoUring, wait_nr: u32) !CompletionBatch {
         necro_log.bumpLoop();
-        const count = while (true) {
-            break self.ring.copyCqes(self.cqe_buf, wait_nr) catch |e| switch (e) {
-                error.SignalInterrupt => continue,
-                else => return e,
-            };
+        const count = self.ring.copyCqes(self.cqe_buf, wait_nr) catch |e| switch (e) {
+            error.SignalInterrupt => return .{ .tokens = self.tokens_buf[0..0], .completions = self.completion_buf[0..0] },
+            else => return e,
         };
 
         log.debug("io_uring: reaped={d} wait={d}", .{ count, wait_nr });
@@ -233,11 +196,11 @@ pub const IoUring = struct {
         };
     }
 
-    fn initRingWithFallbacks(entries: u16) !ring.Ring {
+    fn initRingWithFallbacks(entries: u16) !uring_ring.Ring {
         return tryInitRing(entries, ring_tuned_flags | linux.IORING_SETUP_SQPOLL, ring_sqpoll_idle_ms) catch |err| switch (err) {
             error.PermissionDenied, error.ArgumentsInvalid, error.SystemOutdated => tryInitRing(entries, ring_tuned_flags, 0) catch |fallback_err| switch (fallback_err) {
                 error.ArgumentsInvalid, error.SystemOutdated => tryInitRing(entries, ring_base_flags, 0) catch |legacy_err| switch (legacy_err) {
-                    error.ArgumentsInvalid, error.SystemOutdated => ring.Ring.init(entries, 0),
+                    error.ArgumentsInvalid, error.SystemOutdated => uring_ring.Ring.init(entries, 0),
                     else => legacy_err,
                 },
                 else => fallback_err,
@@ -246,12 +209,12 @@ pub const IoUring = struct {
         };
     }
 
-    fn tryInitRing(entries: u16, flags: u32, sq_thread_idle: u32) !ring.Ring {
+    fn tryInitRing(entries: u16, flags: u32, sq_thread_idle: u32) !uring_ring.Ring {
         var params = std.mem.zeroInit(linux.io_uring_params, .{
             .flags = flags,
             .sq_thread_idle = sq_thread_idle,
         });
-        return try ring.Ring.initParams(entries, &params);
+        return try uring_ring.Ring.initParams(entries, &params);
     }
 
     fn allocPending(self: *IoUring, token: *anyopaque, kind: PendingKind) !usize {
@@ -277,12 +240,12 @@ pub const IoUring = struct {
     fn pendingKindFor(op: Op) PendingKind {
         return switch (op) {
             .accept_multishot, .recv_multishot => .multishot,
-            .send_zc, .sendmsg_zc => .send_zc,
+            .sendmsg_zc => .send_zc,
             else => .oneshot,
         };
     }
 
-    fn decodeCompletion(cqe: ring.Cqe) Completion {
+    fn decodeCompletion(cqe: uring_ring.Cqe) Completion {
         const flags = cqe.flags;
         return .{
             .result = cqe.res,
@@ -304,7 +267,7 @@ pub const IoUring = struct {
 };
 
 test "decodeCompletion extracts io_uring CQE metadata" {
-    const cqe = ring.Cqe{
+    const cqe = uring_ring.Cqe{
         .user_data = 1,
         .res = 128,
         .flags = linux.IORING_CQE_F_BUFFER |

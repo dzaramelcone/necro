@@ -12,7 +12,7 @@ pub const Cqe = extern struct {
     flags: u32,
     extra: [16]u8,
 
-    pub fn err(self: Cqe) linux.E {
+    fn err(self: Cqe) linux.E {
         if (self.res > -4096 and self.res < 0) {
             return @as(linux.E, @enumFromInt(-self.res));
         }
@@ -151,15 +151,15 @@ pub const Ring = struct {
         return false;
     }
 
-    pub fn sqReady(self: *Ring) u32 {
+    fn sqReady(self: *Ring) u32 {
         return self.sq.sqe_tail -% @atomicLoad(u32, self.sq.head, .acquire);
     }
 
-    pub fn cqReady(self: *Ring) u32 {
+    fn cqReady(self: *Ring) u32 {
         return @atomicLoad(u32, self.cq.tail, .acquire) -% self.cq.head.*;
     }
 
-    pub fn cqRingNeedsFlush(self: *Ring) bool {
+    fn cqRingNeedsFlush(self: *Ring) bool {
         return (@atomicLoad(u32, self.sq.flags, .unordered) & linux.IORING_SQ_CQ_OVERFLOW) != 0;
     }
 
@@ -192,7 +192,7 @@ pub const Ring = struct {
         return 0;
     }
 
-    pub fn cqAdvance(self: *Ring, count: u32) void {
+    fn cqAdvance(self: *Ring, count: u32) void {
         if (count > 0) {
             @atomicStore(u32, self.cq.head, self.cq.head.* +% count, .release);
         }

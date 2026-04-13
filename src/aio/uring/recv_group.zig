@@ -3,11 +3,11 @@ const linux = std.os.linux;
 const posix = std.posix;
 const sys = @import("sys.zig");
 const ring = @import("ring.zig");
-const log = std.log.scoped(.@"necro/uring/recv_group");
+const log = std.log.scoped(.@"necro/aio/uring/recv_group");
 
 pub const DEFAULT_BUFFER_SIZE: u32 = 64 * 1024;
 pub const DEFAULT_BUFFER_COUNT: u16 = 64;
-pub const DEFAULT_GROUP_ID: u16 = 1;
+const DEFAULT_GROUP_ID: u16 = 1;
 
 const page_align = std.mem.Alignment.fromByteUnits(std.heap.page_size_min);
 
@@ -82,22 +82,6 @@ pub const Group = struct {
 
     pub fn groupId(self: *const Group) u16 {
         return self.group_id;
-    }
-
-    pub fn bufferCount(self: *const Group) usize {
-        return self.buffer_count;
-    }
-
-    pub fn inUseCount(self: *const Group) usize {
-        return self.in_use_count;
-    }
-
-    pub fn freeCount(self: *const Group) usize {
-        return self.buffer_count - self.in_use_count;
-    }
-
-    pub fn totalBytes(self: *const Group) usize {
-        return @as(usize, self.buffer_size) * @as(usize, self.buffer_count);
     }
 
     pub fn take(self: *Group, completion: sys.Completion) !Lease {
