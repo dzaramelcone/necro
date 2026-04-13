@@ -1,7 +1,7 @@
 //! Postgres client: blocking TCP/Unix connect with startup and auth handshake.
 //! The resulting fd is handed off to the pipeline for async query execution.
 
-// TODO: Reconnect, etc
+// TODO: Reconnect, nonblocking connect, etc
 
 const std = @import("std");
 const mem = std.mem;

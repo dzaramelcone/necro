@@ -1,25 +1,41 @@
 //! Statement cache for the extended query protocol.
-//!
-//! Maps SQL strings to statement names ("s0", "s1", ...) and caches
-//! RowDescription column metadata from the first Describe response.
-//!
-//! First query sends Parse+Describe+Bind+Execute+Sync.
-//! Subsequent queries send Bind+Execute+Sync, skipping SQL parsing on server.
 
 const std = @import("std");
+const necro = @import("necro");
 const wire = @import("wire.zig");
 const strategy = @import("strategy.zig");
-const ffi = @import("../py/ffi.zig");
+const ffi = necro.py.ffi;
 
-pub const MAX_STMTS = 128;
+pub const STMT_CACHE_CAPACITY = 128;
 pub const MAX_COLS = 64;
-pub const HASH_SLOTS = 256;
+
+const BIND_SUFFIX_EXECUTE: [12]u8 = .{
+    0x00, 0x00,
+    'E',  0x00,
+    0x00, 0x00,
+    0x09, 0x00,
+    0x00, 0x00,
+    0x00, 0x00,
+};
+
+fn encodeTextParam(out: []u8, value: ?[]const u8) usize {
+    if (value) |bytes| {
+        const len: i32 = @intCast(bytes.len);
+        std.mem.writeInt(i32, out[0..4], len, .big);
+        @memcpy(out[4..][0..bytes.len], bytes);
+        return 4 + bytes.len;
+    } else {
+        std.mem.writeInt(i32, out[0..4], -1, .big);
+        return 4;
+    }
+}
+const HASH_SLOTS = 256;
 const SLOT_MASK = HASH_SLOTS - 1;
 const EMPTY_SLOT: u16 = 0xFFFF;
 
 comptime {
     std.debug.assert(std.math.isPowerOfTwo(HASH_SLOTS));
-    std.debug.assert(HASH_SLOTS > MAX_STMTS);
+    std.debug.assert(HASH_SLOTS > STMT_CACHE_CAPACITY);
 }
 
 pub const Entry = struct {
@@ -35,9 +51,10 @@ pub const Entry = struct {
     json_key_offsets: [MAX_COLS + 1]u16 = .{0} ** (MAX_COLS + 1),
     json_keys_built: bool = false,
 
-    bind_template: [128]u8 = undefined,
-    bind_template_len: u16 = 0,
-    bind_template_built: bool = false,
+    bind_prefix: [32]u8 = undefined,
+    bind_prefix_len: u8 = 0,
+    param_count: u16 = 0,
+    encode_program_built: bool = false,
 
     pub fn buildJsonKeys(self: *Entry) void {
         if (self.json_keys_built) return;
@@ -61,14 +78,32 @@ pub const Entry = struct {
         self.json_keys_built = true;
     }
 
-    pub fn buildBindTemplate(self: *Entry, stmt_name: []const u8) void {
+    fn buildEncodeProgram(self: *Entry, stmt_name: []const u8, param_count: u16) void {
+        std.debug.assert(!self.encode_program_built);
+        std.debug.assert(11 + stmt_name.len <= self.bind_prefix.len);
+
         var pos: usize = 0;
-        const bind = wire.encodeBindWithParams(self.bind_template[pos..], stmt_name, &.{});
-        pos += bind.len;
-        const exec = wire.encodeExecute(self.bind_template[pos..]);
-        pos += exec.len;
-        self.bind_template_len = @intCast(pos);
-        self.bind_template_built = true;
+        self.bind_prefix[pos] = 'B';
+        pos += 1;
+
+        @memset(self.bind_prefix[pos..][0..4], 0);
+        pos += 4;
+        self.bind_prefix[pos] = 0;
+        pos += 1;
+        @memcpy(self.bind_prefix[pos..][0..stmt_name.len], stmt_name);
+        pos += stmt_name.len;
+        self.bind_prefix[pos] = 0;
+        pos += 1;
+
+        std.mem.writeInt(u16, self.bind_prefix[pos..][0..2], 0, .big);
+        pos += 2;
+
+        std.mem.writeInt(u16, self.bind_prefix[pos..][0..2], param_count, .big);
+        pos += 2;
+
+        self.bind_prefix_len = @intCast(pos);
+        self.param_count = param_count;
+        self.encode_program_built = true;
     }
 };
 
@@ -97,6 +132,29 @@ pub const ParamBuffer = struct {
     pub fn view(self: *const ParamBuffer) []const ?[]const u8 {
         return self.slices[0..self.len];
     }
+
+    pub fn fromTuple(self: *ParamBuffer, tuple: *ffi.PyObject) !void {
+        const n: usize = @intCast(ffi.tupleSize(tuple));
+        if (n > MAX) return error.TooManyParams;
+
+        for (0..n) |i| {
+            const p = ffi.tupleGetItem(tuple, @intCast(i)) orelse return error.InvalidState;
+            if (ffi.isNone(p)) {
+                self.setNull(i);
+                continue;
+            }
+            if (ffi.isString(p)) {
+                const text = try ffi.unicodeAsUTF8(p);
+                self.setBorrowed(i, std.mem.span(text));
+                continue;
+            }
+            const str_obj = try ffi.objectStr(p);
+            defer ffi.decref(str_obj);
+            const text = try ffi.unicodeAsUTF8(str_obj);
+            try self.setCopy(i, std.mem.span(text));
+        }
+        self.len = n;
+    }
 };
 
 pub const Cache = struct {
@@ -105,11 +163,11 @@ pub const Cache = struct {
         stmt_idx: u16,
     };
 
-    entries: [MAX_STMTS]Entry = undefined,
+    entries: [STMT_CACHE_CAPACITY]Entry = undefined,
     len: u16 = 0,
     hash_slots: [HASH_SLOTS]u16 = .{EMPTY_SLOT} ** HASH_SLOTS,
 
-    pub fn lookup(self: *const Cache, sql_hash: u64) ?u16 {
+    fn lookup(self: *const Cache, sql_hash: u64) ?u16 {
         var slot: usize = @as(usize, @truncate(sql_hash)) & SLOT_MASK;
         for (0..HASH_SLOTS) |_| {
             const idx = self.hash_slots[slot];
@@ -120,8 +178,8 @@ pub const Cache = struct {
         unreachable;
     }
 
-    pub fn insert(self: *Cache, sql_hash: u64) !u16 {
-        if (self.len >= MAX_STMTS) return error.StmtCacheFull;
+    fn insert(self: *Cache, sql_hash: u64) !u16 {
+        if (self.len >= STMT_CACHE_CAPACITY) return error.StmtCacheFull;
         const idx = self.len;
         self.entries[idx] = .{ .sql_hash = sql_hash };
         self.len += 1;
@@ -141,7 +199,7 @@ pub const Cache = struct {
         return &self.entries[idx];
     }
 
-    pub fn stmtName(idx: u16, buf: *[8]u8) []const u8 {
+    fn stmtName(idx: u16, buf: *[8]u8) []const u8 {
         return std.fmt.bufPrint(buf, "s{d}", .{idx}) catch buf[0..2];
     }
 
@@ -149,7 +207,7 @@ pub const Cache = struct {
         self: *Cache,
         buf: []u8,
         sql: []const u8,
-        conn_prepared: *[MAX_STMTS]bool,
+        conn_prepared: *[STMT_CACHE_CAPACITY]bool,
         params: *const ParamBuffer,
     ) !Encoded {
         const sql_hash = std.hash.Wyhash.hash(0, sql);
@@ -157,31 +215,43 @@ pub const Cache = struct {
         var name_buf: [8]u8 = undefined;
 
         const idx = if (self.lookup(sql_hash)) |i| i else try self.insert(sql_hash);
+        const entry = &self.entries[idx];
         const name = stmtName(idx, &name_buf);
+
+        if (!entry.encode_program_built) {
+            entry.buildEncodeProgram(name, @intCast(params.len));
+        }
+        std.debug.assert(params.len == entry.param_count);
 
         if (!conn_prepared[idx]) {
             const parse = wire.encodeParse(buf[pos..], name, sql);
             pos += parse.len;
-            if (!self.entries[idx].described) {
+            if (!entry.described) {
                 const desc = wire.encodeDescribe(buf[pos..], 'S', name);
                 pos += desc.len;
             }
             conn_prepared[idx] = true;
-            if (!self.entries[idx].bind_template_built) {
-                self.entries[idx].buildBindTemplate(name);
-            }
         }
 
-        if (params.len == 0 and self.entries[idx].bind_template_built) {
-            const tlen = self.entries[idx].bind_template_len;
-            @memcpy(buf[pos..][0..tlen], self.entries[idx].bind_template[0..tlen]);
-            pos += tlen;
-        } else {
-            const bind = wire.encodeBindWithParams(buf[pos..], name, params.view());
-            pos += bind.len;
-            const exec = wire.encodeExecute(buf[pos..]);
-            pos += exec.len;
+        const bind_start = pos;
+
+        @memcpy(buf[pos..][0..entry.bind_prefix_len], entry.bind_prefix[0..entry.bind_prefix_len]);
+        pos += entry.bind_prefix_len;
+
+        var params_bytes: usize = 0;
+        const slices = params.view();
+        for (0..entry.param_count) |i| {
+            const written = encodeTextParam(buf[pos..], slices[i]);
+            pos += written;
+            params_bytes += written;
         }
+
+        @memcpy(buf[pos..][0..BIND_SUFFIX_EXECUTE.len], BIND_SUFFIX_EXECUTE[0..]);
+        pos += BIND_SUFFIX_EXECUTE.len;
+
+        const bind_length: u32 = @intCast(entry.bind_prefix_len + params_bytes + 2 - 1);
+        std.mem.writeInt(u32, buf[bind_start + 1 ..][0..4], bind_length, .big);
+
         return .{ .bytes_written = pos, .stmt_idx = idx };
     }
 };

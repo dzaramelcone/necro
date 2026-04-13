@@ -1,20 +1,22 @@
-//! Row — zero-copy Python type for PG query results.
-//!
-//! Field data lives in a retained Slab. JSON serialization bypasses Python
-//! entirely via precomputed key fragments. Field access lazily creates and
-//! caches Python string objects.
+//! Zero-copy Python type for PG query results.
+//! TODO Convert to arena when req/resp becomes arena backed
+//! I think the worst case scatter gather is much cleaner here
+//! due to only 1 PG conn, but its nice to have them uniform.
 
 const std = @import("std");
-const ffi = @import("../py/ffi.zig");
-const serialize = @import("../json/serialize.zig");
-const slab = @import("slab.zig");
+const necro = @import("necro");
+const ffi = necro.py.ffi;
+const serialize = necro.json;
+const core = necro.core;
 const stmt = @import("stmt.zig");
+
+pub const BigPool = core.RefCountedPool(core.BigSlab);
 
 const SerializeStrategy = @import("strategy.zig").SerializeStrategy;
 const PyObject = ffi.PyObject;
 
-pub const MAX_FIELDS = stmt.MAX_COLS;
-pub const NULL_LEN: u16 = 0xFFFF;
+const MAX_FIELDS = stmt.MAX_COLS;
+const NULL_LEN: u16 = 0xFFFF;
 
 const schema_allocator = std.heap.c_allocator;
 
@@ -71,12 +73,13 @@ const Schema = struct {
     }
 };
 
-pub const RowObject = extern struct {
+const RowObject = extern struct {
     ob_base: PyObject,
     stmt_cache: ?*stmt.Cache = null,
     stmt_idx: u16 = 0,
     field_count: u16 = 0,
-    slab: ?*slab.Slab = null,
+    row_pool: ?*BigPool = null,
+    row_lease: core.Lease = undefined,
     schema: ?*Schema = null,
     field_offsets: [MAX_FIELDS]u16 = .{0} ** MAX_FIELDS,
     field_lens: [MAX_FIELDS]u16 = .{NULL_LEN} ** MAX_FIELDS,
@@ -84,7 +87,7 @@ pub const RowObject = extern struct {
 };
 
 fn fieldSlice(self: *const RowObject, i: usize) []const u8 {
-    const data = &self.slab.?.data;
+    const data = &self.row_pool.?.get(self.row_lease).data;
     return data[self.field_offsets[i]..][0..self.field_lens[i]];
 }
 
@@ -116,7 +119,7 @@ fn jsonKeyFragment(self: *const RowObject, i: usize) []const u8 {
     return entry.json_keys[entry.json_key_offsets[i]..entry.json_key_offsets[i + 1]];
 }
 
-pub const SerializeError = serialize.SerializeError || error{BufferTooSmall};
+const SerializeError = serialize.SerializeError || error{BufferTooSmall};
 
 fn writeFieldValue(self: *const RowObject, i: usize, buf: []u8, pos: *usize) SerializeError!void {
     if (self.field_lens[i] == NULL_LEN) {
@@ -198,7 +201,7 @@ fn rowDealloc(self_obj: ?*PyObject) callconv(.c) void {
         if (cached.*) |value| ffi.decref(value);
     }
     if (self.schema) |schema| schema.destroy();
-    if (self.slab) |s| s.release();
+    if (self.row_pool) |p| p.release(self.row_lease);
     ffi.freeObject(obj);
 }
 
@@ -216,42 +219,42 @@ fn rowRaw(self_obj: ?*PyObject, args: ?*PyObject) callconv(.c) ?*PyObject {
     const obj = self_obj orelse return null;
     const tuple = args orelse return null;
     if (!ffi.isTuple(tuple) or ffi.tupleSize(tuple) != 1) {
-        ffi.errSetString(ffi.exc.TypeError, "raw(name) takes exactly one argument");
+        ffi.errSetString(ffi.exc.TypeError(), "raw(name) takes exactly one argument");
         return null;
     }
     const name = ffi.tupleGetItem(tuple, 0) orelse return null;
     if (!ffi.isString(name)) {
-        ffi.errSetString(ffi.exc.TypeError, "raw(name) requires a string");
+        ffi.errSetString(ffi.exc.TypeError(), "raw(name) requires a string");
         return null;
     }
     const self: *RowObject = @ptrCast(@alignCast(obj));
     const index = lookupFieldIndex(self, name) orelse {
-        ffi.errSetString(ffi.exc.AttributeError, "unknown field");
+        ffi.errSetString(ffi.exc.AttributeError(), "unknown field");
         return null;
     };
     return fieldMemoryView(obj, self, index);
 }
 
-pub fn createSubrow(
+fn createSubrow(
     obj: *PyObject,
     field_names_obj: *PyObject,
     indexes_obj: *PyObject,
     nullable: bool,
-) ffi.PythonError!?*PyObject {
+) !?*PyObject {
     if (!ffi.isTuple(field_names_obj) or !ffi.isTuple(indexes_obj)) {
-        ffi.errSetString(ffi.exc.TypeError, "subrow metadata requires tuples");
+        ffi.errSetString(ffi.exc.TypeError(), "subrow metadata requires tuples");
         return error.TypeError;
     }
 
     const field_count = ffi.tupleSize(field_names_obj);
     if (field_count != ffi.tupleSize(indexes_obj) or field_count < 0 or field_count > MAX_FIELDS) {
-        ffi.errSetString(ffi.exc.ValueError, "subrow metadata field count mismatch");
+        ffi.errSetString(ffi.exc.ValueError(), "subrow metadata field count mismatch");
         return error.ConversionError;
     }
 
     const parent: *RowObject = @ptrCast(@alignCast(obj));
-    if (parent.slab == null) {
-        ffi.errSetString(ffi.exc.RuntimeError, "row backing slab is missing");
+    if (parent.row_pool == null) {
+        ffi.errSetString(ffi.exc.RuntimeError(), "row backing slab is missing");
         return error.PythonError;
     }
 
@@ -261,21 +264,21 @@ pub fn createSubrow(
     var all_null = field_count > 0;
     for (0..@intCast(field_count)) |i| {
         const field_name = ffi.tupleGetItem(field_names_obj, @intCast(i)) orelse {
-            ffi.errSetString(ffi.exc.RuntimeError, "subrow field name lookup failed");
+            ffi.errSetString(ffi.exc.RuntimeError(), "subrow field name lookup failed");
             return error.PythonError;
         };
         const index_obj = ffi.tupleGetItem(indexes_obj, @intCast(i)) orelse {
-            ffi.errSetString(ffi.exc.RuntimeError, "subrow index lookup failed");
+            ffi.errSetString(ffi.exc.RuntimeError(), "subrow index lookup failed");
             return error.PythonError;
         };
         if (!ffi.isString(field_name)) {
-            ffi.errSetString(ffi.exc.TypeError, "subrow field names must be strings");
+            ffi.errSetString(ffi.exc.TypeError(), "subrow field names must be strings");
             return error.TypeError;
         }
 
         const field_index_long = try ffi.longAsLong(index_obj);
         if (field_index_long < 0 or field_index_long >= parent.field_count) {
-            ffi.errSetString(ffi.exc.IndexError, "subrow index out of range");
+            ffi.errSetString(ffi.exc.IndexError(), "subrow index out of range");
             return error.ConversionError;
         }
 
@@ -295,12 +298,14 @@ pub fn createSubrow(
     errdefer schema.destroy();
 
     const tp = row_type orelse {
-        ffi.errSetString(ffi.exc.RuntimeError, "necro.Row type is not initialized");
+        ffi.errSetString(ffi.exc.RuntimeError(), "necro.Row type is not initialized");
         return error.PythonError;
     };
     const child = try ffi.alloc(RowObject, tp);
     child.field_count = @intCast(field_count);
-    child.slab = parent.slab.?.retain();
+    child.row_pool = parent.row_pool;
+    child.row_lease = parent.row_lease;
+    parent.row_pool.?.retain(parent.row_lease);
     child.schema = schema;
 
     for (0..@intCast(field_count)) |i| {
@@ -317,7 +322,7 @@ fn rowSubrow(self_obj: ?*PyObject, args: ?*PyObject) callconv(.c) ?*PyObject {
     const tuple = args orelse return null;
     const argc = ffi.tupleSize(tuple);
     if (!ffi.isTuple(tuple) or (argc != 2 and argc != 3)) {
-        ffi.errSetString(ffi.exc.TypeError, "subrow(field_names, indexes, nullable=False)");
+        ffi.errSetString(ffi.exc.TypeError(), "subrow(field_names, indexes, nullable=False)");
         return null;
     }
 
@@ -357,7 +362,7 @@ const row_type_spec = ffi.TypeSpec{
     .basicsize = @sizeOf(RowObject),
     .itemsize = 0,
     .flags = ffi.flags.DEFAULT,
-    .slots = &row_type_slots,
+    .slots = @ptrCast(@constCast(&row_type_slots)),
 };
 
 threadlocal var row_type: ?*PyObject = null;
@@ -368,27 +373,55 @@ pub fn initType(mod: *PyObject) ffi.PythonError!void {
     try ffi.setAttrRaw(mod, "Row", row_type.?);
 }
 
-pub fn resetTypeForTesting() void {
-    row_type = null;
-}
-
 pub fn isRow(obj: *PyObject) bool {
     const tp = row_type orelse return false;
     return ffi.isSubtype(ffi.objType(obj), @ptrCast(@alignCast(tp)));
 }
 
 pub const CreateError = ffi.PythonError || error{
+    PoolExhausted,
     OutOfMemory,
-    SlabPoolExhausted,
     RowTooLarge,
 };
+
+fn createWithSlab(
+    cache: *stmt.Cache,
+    stmt_idx: u16,
+    count: u16,
+    values: []const ?[]const u8,
+    pool: *BigPool,
+    lease: core.Lease,
+    s: *core.BigSlab,
+) CreateError!*PyObject {
+    const tp = row_type orelse return error.PythonError;
+    const obj = try ffi.alloc(RowObject, tp);
+
+    obj.stmt_cache = cache;
+    obj.stmt_idx = stmt_idx;
+    obj.field_count = count;
+    obj.row_pool = pool;
+    obj.row_lease = lease;
+
+    for (0..count) |i| {
+        if (values[i]) |v| {
+            const field_offset = @intFromPtr(v.ptr) - @intFromPtr(&s.data);
+            obj.field_offsets[i] = @intCast(field_offset);
+            obj.field_lens[i] = @intCast(v.len);
+        } else {
+            obj.field_offsets[i] = 0;
+            obj.field_lens[i] = NULL_LEN;
+        }
+    }
+
+    return @ptrCast(obj);
+}
 
 pub fn create(
     cache: *stmt.Cache,
     stmt_idx: u16,
     field_count: u16,
     values: []const ?[]const u8,
-    pool: *slab.SlabPool,
+    pool: *BigPool,
 ) CreateError!*PyObject {
     const count = @min(field_count, MAX_FIELDS);
 
@@ -397,12 +430,13 @@ pub fn create(
         if (values[i]) |v| {
             if (v.len > std.math.maxInt(u16)) return error.RowTooLarge;
             total += v.len;
-            if (total > slab.CAPACITY) return error.RowTooLarge;
+            if (total > core.BigSlab.SIZE) return error.RowTooLarge;
         }
     }
 
-    const s = try pool.acquire();
-    errdefer s.release();
+    const lease = try pool.borrow();
+    errdefer pool.release(lease);
+    const s = pool.get(lease);
 
     var offset: usize = 0;
     const tp = row_type orelse return error.PythonError;
@@ -411,7 +445,8 @@ pub fn create(
     obj.stmt_cache = cache;
     obj.stmt_idx = stmt_idx;
     obj.field_count = count;
-    obj.slab = s;
+    obj.row_pool = pool;
+    obj.row_lease = lease;
 
     for (0..count) |i| {
         if (values[i]) |v| {
@@ -426,14 +461,6 @@ pub fn create(
     }
 
     return @ptrCast(obj);
-}
-
-pub fn serializeFieldValue(obj: *PyObject, field_index: usize, buf: []u8) SerializeError!usize {
-    const self: *RowObject = @ptrCast(@alignCast(obj));
-    if (field_index >= self.field_count) return error.BufferTooSmall;
-    var pos: usize = 0;
-    try writeFieldValue(self, field_index, buf, &pos);
-    return pos;
 }
 
 pub fn serializeOne(obj: *PyObject, buf: []u8) SerializeError!usize {
@@ -451,35 +478,6 @@ pub fn serializeOne(obj: *PyObject, buf: []u8) SerializeError!usize {
 
     if (pos >= buf.len) return error.BufferTooSmall;
     buf[pos] = '}';
-    pos += 1;
-    return pos;
-}
-
-pub fn serializeList(list: *PyObject, buf: []u8) SerializeError!usize {
-    const len = ffi.listSize(list);
-    if (len < 0) return error.BufferTooSmall;
-    var pos: usize = 0;
-    if (pos >= buf.len) return error.BufferTooSmall;
-    buf[pos] = '[';
-    pos += 1;
-
-    var i: isize = 0;
-    while (i < len) : (i += 1) {
-        if (i > 0) {
-            if (pos >= buf.len) return error.BufferTooSmall;
-            buf[pos] = ',';
-            pos += 1;
-        }
-        const item = ffi.listGetItem(list, i) orelse return error.BufferTooSmall;
-        if (isRow(item)) {
-            pos += try serializeOne(item, buf[pos..]);
-        } else {
-            return error.BufferTooSmall;
-        }
-    }
-
-    if (pos >= buf.len) return error.BufferTooSmall;
-    buf[pos] = ']';
     pos += 1;
     return pos;
 }

@@ -6,11 +6,11 @@ const mem = std.mem;
 const posix = std.posix;
 
 /// Protocol version 3.0 = 196608
-pub const protocol_version: u32 = 196608;
+const protocol_version: u32 = 196608;
 
-pub const ssl_request_code: u32 = 80877103;
+const ssl_request_code: u32 = 80877103;
 
-pub const Tag = struct {
+const Tag = struct {
     pub const query: u8 = 'Q';
     pub const parse: u8 = 'P';
     pub const bind: u8 = 'B';
@@ -60,13 +60,13 @@ pub const AuthType = enum(u32) {
     sasl_final = 12,
 };
 
-pub const TransactionStatus = enum(u8) {
+const TransactionStatus = enum(u8) {
     idle = 'I',
     in_transaction = 'T',
     failed = 'E',
 };
 
-pub const ErrorField = enum(u8) {
+const ErrorField = enum(u8) {
     severity = 'S',
     severity_v = 'V',
     code = 'C',
@@ -97,7 +97,7 @@ pub const MessageHeader = extern struct {
     }
 };
 
-pub const SSLRequest = extern struct {
+const SSLRequest = extern struct {
     length: u32 align(1),
     code: u32 align(1),
 
@@ -106,7 +106,7 @@ pub const SSLRequest = extern struct {
     }
 };
 
-pub const StartupMessageHeader = extern struct {
+const StartupMessageHeader = extern struct {
     length: u32 align(1),
     protocol_version: u32 align(1),
 
@@ -115,7 +115,7 @@ pub const StartupMessageHeader = extern struct {
     }
 };
 
-pub const AuthenticationOk = extern struct {
+const AuthenticationOk = extern struct {
     tag: u8,
     length: u32 align(1),
     status: u32 align(1),
@@ -125,7 +125,7 @@ pub const AuthenticationOk = extern struct {
     }
 };
 
-pub const AuthenticationMD5 = extern struct {
+const AuthenticationMD5 = extern struct {
     tag: u8,
     length: u32 align(1),
     status: u32 align(1),
@@ -136,7 +136,7 @@ pub const AuthenticationMD5 = extern struct {
     }
 };
 
-pub const BackendKeyData = extern struct {
+const BackendKeyData = extern struct {
     tag: u8,
     length: u32 align(1),
     process_id: u32 align(1),
@@ -147,7 +147,7 @@ pub const BackendKeyData = extern struct {
     }
 };
 
-pub const ReadyForQuery = extern struct {
+const ReadyForQuery = extern struct {
     tag: u8,
     length: u32 align(1),
     status: u8,
@@ -157,7 +157,7 @@ pub const ReadyForQuery = extern struct {
     }
 };
 
-pub const ServerParams = struct {
+const ServerParams = struct {
     server_version: []const u8,
     server_encoding: []const u8,
     client_encoding: []const u8,
@@ -165,7 +165,7 @@ pub const ServerParams = struct {
     integer_datetimes: bool,
 };
 
-pub const ErrorNotice = struct {
+const ErrorNotice = struct {
     severity: []const u8,
     code: []const u8,
     message: []const u8,
@@ -174,7 +174,7 @@ pub const ErrorNotice = struct {
     position: ?[]const u8,
 };
 
-pub const Notification = struct {
+const Notification = struct {
     pid: u32,
     channel: []const u8,
     payload: []const u8,
@@ -279,52 +279,6 @@ pub fn encodeDescribe(buf: []u8, kind: u8, name: []const u8) []const u8 {
     pos += name.len;
     buf[pos] = 0;
     pos += 1;
-
-    return buf[0..pos];
-}
-
-pub fn encodeBindWithParams(buf: []u8, stmt_name: []const u8, params: []const ?[]const u8) []const u8 {
-    var pos: usize = 0;
-
-    buf[pos] = Tag.bind;
-    pos += 1;
-
-    const length_pos = pos;
-    pos += 4;
-
-    buf[pos] = 0;
-    pos += 1;
-
-    @memcpy(buf[pos..][0..stmt_name.len], stmt_name);
-    pos += stmt_name.len;
-    buf[pos] = 0;
-    pos += 1;
-
-    @memcpy(buf[pos..][0..2], &mem.toBytes(mem.nativeTo(u16, 0, .big)));
-    pos += 2;
-
-    const num_params: u16 = @intCast(params.len);
-    @memcpy(buf[pos..][0..2], &mem.toBytes(mem.nativeTo(u16, num_params, .big)));
-    pos += 2;
-
-    for (params) |param| {
-        if (param) |val| {
-            const len: i32 = @intCast(val.len);
-            @memcpy(buf[pos..][0..4], &mem.toBytes(mem.nativeTo(i32, len, .big)));
-            pos += 4;
-            @memcpy(buf[pos..][0..val.len], val);
-            pos += val.len;
-        } else {
-            @memcpy(buf[pos..][0..4], &mem.toBytes(mem.nativeTo(i32, -1, .big)));
-            pos += 4;
-        }
-    }
-
-    @memcpy(buf[pos..][0..2], &mem.toBytes(mem.nativeTo(u16, 0, .big)));
-    pos += 2;
-
-    const length: u32 = @intCast(pos - 1);
-    @memcpy(buf[length_pos..][0..4], &mem.toBytes(mem.nativeTo(u32, length, .big)));
 
     return buf[0..pos];
 }
@@ -658,30 +612,44 @@ test "wire protocol ssl negotiation" {}
 test "wire protocol simple query" {}
 test "wire protocol extended query parse" {}
 test "wire protocol bind with params" {
+    const stmt = @import("stmt.zig");
+    var cache: stmt.Cache = .{};
+    var conn_prepared: [stmt.STMT_CACHE_CAPACITY]bool = .{false} ** stmt.STMT_CACHE_CAPACITY;
     var buf: [256]u8 = undefined;
 
-    const b0 = encodeBindWithParams(&buf, "s0", &.{});
-    try std.testing.expectEqual(Tag.bind, b0[0]);
-    try std.testing.expectEqual(@as(usize, 15), b0.len);
+    // Case 0: zero params, stmt "s0"
+    // First encode warms cache + conn_prepared (emits Parse+Describe+Bind+Execute).
+    _ = try cache.encode(&buf, "SELECT 0", &conn_prepared, &.{});
+    // Second encode produces only Bind+Execute starting at offset 0.
+    const e0 = try cache.encode(&buf, "SELECT 0", &conn_prepared, &.{});
+    try std.testing.expectEqual(Tag.bind, buf[0]);
+    // Bind length for zero-param s0: prefix_len(13) + 0 + 2 - 1 = 14
+    try std.testing.expectEqual(@as(u32, 14), mem.readInt(u32, buf[1..5], .big));
+    // bytes_written = 15 (Bind) + 10 (Execute) = 25
+    try std.testing.expectEqual(@as(usize, 25), e0.bytes_written);
 
-    const params1 = [_]?[]const u8{@as([]const u8, "idea1")};
-    const b1 = encodeBindWithParams(&buf, "s1", &params1);
-    try std.testing.expectEqual(Tag.bind, b1[0]);
-    try std.testing.expectEqual(@as(usize, 24), b1.len);
+    // Case 1: one 5-byte ASCII param "idea1", stmt "s1"
+    var params1: stmt.ParamBuffer = .{ .len = 1 };
+    params1.setBorrowed(0, "idea1");
+    _ = try cache.encode(&buf, "SELECT $1::text AS x", &conn_prepared, &params1);
+    const e1 = try cache.encode(&buf, "SELECT $1::text AS x", &conn_prepared, &params1);
+    try std.testing.expectEqual(Tag.bind, buf[0]);
+    // Bind length for one-param s1: prefix_len(13) + (4+5) + 2 - 1 = 23
+    try std.testing.expectEqual(@as(u32, 23), mem.readInt(u32, buf[1..5], .big));
+    // bytes_written = 24 (Bind) + 10 (Execute) = 34
+    try std.testing.expectEqual(@as(usize, 34), e1.bytes_written);
+    try std.testing.expectEqual(@as(u16, 1), mem.readInt(u16, buf[11..13], .big));
+    try std.testing.expectEqual(@as(i32, 5), mem.readInt(i32, buf[13..17], .big));
+    try std.testing.expectEqualStrings("idea1", buf[17..22]);
 
-    const num_params = mem.readInt(u16, b1[11..13], .big);
-    try std.testing.expectEqual(@as(u16, 1), num_params);
-
-    const param_len = mem.readInt(i32, b1[13..17], .big);
-    try std.testing.expectEqual(@as(i32, 5), param_len);
-
-    try std.testing.expectEqualStrings("idea1", b1[17..22]);
-
-    const params_null = [_]?[]const u8{null};
-    const b2 = encodeBindWithParams(&buf, "s0", &params_null);
-    try std.testing.expectEqual(@as(usize, 19), b2.len);
-    const null_len = mem.readInt(i32, b2[13..17], .big);
-    try std.testing.expectEqual(@as(i32, -1), null_len);
+    // Case 2: one null param, stmt "s2"
+    var params_null: stmt.ParamBuffer = .{ .len = 1 };
+    params_null.setNull(0);
+    _ = try cache.encode(&buf, "SELECT $1::text AS y", &conn_prepared, &params_null);
+    const e2 = try cache.encode(&buf, "SELECT $1::text AS y", &conn_prepared, &params_null);
+    // bytes_written = 19 (Bind, one null i32) + 10 (Execute) = 29
+    try std.testing.expectEqual(@as(usize, 29), e2.bytes_written);
+    try std.testing.expectEqual(@as(i32, -1), mem.readInt(i32, buf[13..17], .big));
 }
 
 test "wire protocol extended query execute" {}
