@@ -105,6 +105,10 @@ pub fn memoryViewFromSlice(obj: *PyObject, data: []const u8) ?*PyObject {
     return c.PyMemoryView_FromBuffer(&view);
 }
 
+pub fn dictProxyNew(dict: *PyObject) PythonError!*PyObject {
+    return c.PyDictProxy_New(dict) orelse return error.PythonError;
+}
+
 pub fn freeObject(obj: *PyObject) void {
     const tp = objType(obj);
     if (tp.tp_free) |free| free(obj);
@@ -120,12 +124,13 @@ pub fn clearWeakRefs(obj: *PyObject) void {
 }
 
 pub const exc = struct {
-    pub const TypeError: *PyObject = @ptrCast(c.PyExc_TypeError);
-    pub const RuntimeError: *PyObject = @ptrCast(c.PyExc_RuntimeError);
-    pub const ValueError: *PyObject = @ptrCast(c.PyExc_ValueError);
-    pub const AttributeError: *PyObject = @ptrCast(c.PyExc_AttributeError);
-    pub const IndexError: *PyObject = @ptrCast(c.PyExc_IndexError);
-    pub const StopIteration: *PyObject = @ptrCast(c.PyExc_StopIteration);
+    pub inline fn TypeError() *PyObject { return @ptrCast(c.PyExc_TypeError); }
+    pub inline fn RuntimeError() *PyObject { return @ptrCast(c.PyExc_RuntimeError); }
+    pub inline fn ValueError() *PyObject { return @ptrCast(c.PyExc_ValueError); }
+    pub inline fn AttributeError() *PyObject { return @ptrCast(c.PyExc_AttributeError); }
+    pub inline fn IndexError() *PyObject { return @ptrCast(c.PyExc_IndexError); }
+    pub inline fn StopIteration() *PyObject { return @ptrCast(c.PyExc_StopIteration); }
+    pub inline fn KeyError() *PyObject { return @ptrCast(c.PyExc_KeyError); }
 };
 
 pub const Slot = struct {
@@ -141,6 +146,7 @@ pub const Slot = struct {
     pub const iter = c.Py_tp_iter;
     pub const iternext = c.Py_tp_iternext;
     pub const @"await" = c.Py_am_await;
+    pub const mp_subscript = c.Py_mp_subscript;
 };
 
 pub const flags = struct {
@@ -178,7 +184,7 @@ pub fn alloc(comptime T: type, type_obj: *PyObject) PythonError!*T {
     const self: *T = @ptrCast(@alignCast(raw));
     const base: *PyObject = @ptrCast(@alignCast(self));
     const ob_base = base.*;
-    self.* = std.mem.zeroes(T);
+    @memset(std.mem.asBytes(self), 0);
     base.* = ob_base;
     return self;
 }
@@ -207,31 +213,28 @@ pub const PythonError = error{
 };
 
 /// Initialize the CPython interpreter.
-pub fn init() void {
+fn init() void {
     c.Py_Initialize();
 }
 
 /// Finalize the CPython interpreter.
-pub fn deinit() void {
+fn deinit() void {
     if (c.Py_IsInitialized() != 0) {
         c.Py_Finalize();
     }
 }
 
 /// Execute a Python code string. Returns error.PythonError on failure.
-pub fn runString(code: [*:0]const u8) PythonError!void {
+fn runString(code: [*:0]const u8) PythonError!void {
     if (c.PyRun_SimpleString(code) != 0) return error.PythonError;
 }
 
-/// Ensure the current thread holds the GIL. Callers that don't intend to
-/// release it (e.g. sub-interpreter init where teardown happens elsewhere)
-/// can discard the returned state.
 pub fn gilStateEnsure() c.PyGILState_STATE {
     return c.PyGILState_Ensure();
 }
 
 /// Return true if a `PyStatus` represents an error.
-pub fn statusIsError(status: c.PyStatus) bool {
+fn statusIsError(status: c.PyStatus) bool {
     return c.PyStatus_IsError(status) != 0;
 }
 
@@ -252,7 +255,7 @@ pub fn typeFromModuleAndSpec(mod: *PyObject, spec: *const c.PyType_Spec, bases: 
 }
 
 /// GIL strategy for a sub-interpreter.
-pub const InterpreterGil = enum(c_int) {
+const InterpreterGil = enum(c_int) {
     /// Inherit the default GIL strategy (currently shared).
     default = 0,
     /// Share the main interpreter's GIL. One GIL for all interpreters.
@@ -263,7 +266,7 @@ pub const InterpreterGil = enum(c_int) {
 
 /// Zig-idiomatic sub-interpreter configuration.
 /// Translates to `c.PyInterpreterConfig` at call time via `toC()`.
-pub const InterpreterConfig = struct {
+const InterpreterConfig = struct {
     use_main_obmalloc: bool = false,
     allow_fork: bool = false,
     allow_exec: bool = false,
@@ -342,7 +345,7 @@ pub fn getAttrRaw(obj: *PyObject, attr: [*:0]const u8) PythonError!*PyObject {
 }
 
 /// Get an attribute from a Python object. Caller must decref the result.
-pub fn getAttr(obj: *PyObject, attr: [*:0]const u8) PythonError!*PyObject {
+fn getAttr(obj: *PyObject, attr: [*:0]const u8) PythonError!*PyObject {
     return getAttrRaw(obj, attr) catch |err| {
         errPrint();
         return err;
@@ -366,7 +369,7 @@ pub fn setAttrRaw(obj: *PyObject, attr: [*:0]const u8, value: *PyObject) PythonE
 }
 
 /// Set an attribute on a Python object.
-pub fn setAttr(obj: *PyObject, attr: [*:0]const u8, value: *PyObject) PythonError!void {
+fn setAttr(obj: *PyObject, attr: [*:0]const u8, value: *PyObject) PythonError!void {
     return setAttrRaw(obj, attr, value) catch |err| {
         errPrint();
         return err;
@@ -379,7 +382,7 @@ pub fn callObjectRaw(callable: *PyObject, args: ?*PyObject) PythonError!*PyObjec
 }
 
 /// Call a Python callable with optional args tuple. Caller must decref result.
-pub fn callObject(callable: *PyObject, args: ?*PyObject) PythonError!*PyObject {
+fn callObject(callable: *PyObject, args: ?*PyObject) PythonError!*PyObject {
     return callObjectRaw(callable, args) catch |err| {
         errPrint();
         return err;
@@ -387,7 +390,7 @@ pub fn callObject(callable: *PyObject, args: ?*PyObject) PythonError!*PyObject {
 }
 
 /// Call a Python callable with kwargs without printing exceptions.
-pub fn callObjectKwargsRaw(callable: *PyObject, args: ?*PyObject, kwargs: *PyObject) PythonError!*PyObject {
+fn callObjectKwargsRaw(callable: *PyObject, args: ?*PyObject, kwargs: *PyObject) PythonError!*PyObject {
     return c.PyObject_Call(callable, args, kwargs) orelse error.CallError;
 }
 
@@ -449,7 +452,7 @@ pub fn increfBorrowed(obj: *PyObject) *PyObject {
     return obj;
 }
 
-pub fn xincref(obj: ?*PyObject) void {
+fn xincref(obj: ?*PyObject) void {
     if (obj) |o| c.Py_IncRef(o);
 }
 
@@ -537,7 +540,7 @@ pub fn longAsLong(obj: *PyObject) PythonError!c_long {
     return val;
 }
 
-pub fn floatFromDouble(v: f64) PythonError!*PyObject {
+fn floatFromDouble(v: f64) PythonError!*PyObject {
     return c.PyFloat_FromDouble(v) orelse return error.PythonError;
 }
 
@@ -657,7 +660,7 @@ pub fn dictNew() PythonError!*PyObject {
     return c.PyDict_New() orelse return error.PythonError;
 }
 
-pub fn dictSetItemString(dict: *PyObject, key: [*:0]const u8, value: *PyObject) PythonError!void {
+fn dictSetItemString(dict: *PyObject, key: [*:0]const u8, value: *PyObject) PythonError!void {
     if (c.PyDict_SetItemString(dict, key, value) != 0) return error.PythonError;
 }
 
@@ -667,7 +670,7 @@ pub fn dictSetItem(dict: *PyObject, key: *PyObject, value: *PyObject) PythonErro
 }
 
 /// Returns a borrowed reference (do not decref).
-pub fn dictGetItem(dict: *PyObject, key: *PyObject) ?*PyObject {
+fn dictGetItem(dict: *PyObject, key: *PyObject) ?*PyObject {
     return c.PyDict_GetItem(dict, key);
 }
 
@@ -678,11 +681,11 @@ pub fn dictGetItemString(dict: *PyObject, key: [*:0]const u8) ?*PyObject {
 
 // ── List operations ─────────────────────────────────────────────────
 
-pub fn listNew(len: isize) PythonError!*PyObject {
+fn listNew(len: isize) PythonError!*PyObject {
     return c.PyList_New(len) orelse return error.PythonError;
 }
 
-pub fn listAppend(list: *PyObject, item: *PyObject) PythonError!void {
+fn listAppend(list: *PyObject, item: *PyObject) PythonError!void {
     if (c.PyList_Append(list, item) != 0) return error.PythonError;
 }
 
@@ -691,7 +694,7 @@ pub fn listAppend(list: *PyObject, item: *PyObject) PythonError!void {
 /// Wrap a Zig function as a CPython method definition.
 /// The Zig function must take no arguments (METH_NOARGS) and return
 /// either *PyObject or PythonError!*PyObject.
-pub fn wrapNoArgs(comptime name: [*:0]const u8, comptime func: fn () PythonError!*PyObject) c.PyMethodDef {
+fn wrapNoArgs(comptime name: [*:0]const u8, comptime func: fn () PythonError!*PyObject) c.PyMethodDef {
     return .{
         .ml_name = name,
         .ml_meth = &struct {
@@ -709,7 +712,7 @@ pub fn wrapNoArgs(comptime name: [*:0]const u8, comptime func: fn () PythonError
 
 /// Wrap a Zig function as a CPython METH_VARARGS method definition.
 /// The Zig function signature: fn(?*PyObject, ?*PyObject) callconv(.c) ?*PyObject
-pub fn wrapVarArgs(comptime name: [*:0]const u8, comptime func: *const fn (?*PyObject, ?*PyObject) callconv(.c) ?*PyObject) c.PyMethodDef {
+fn wrapVarArgs(comptime name: [*:0]const u8, comptime func: *const fn (?*PyObject, ?*PyObject) callconv(.c) ?*PyObject) c.PyMethodDef {
     return .{
         .ml_name = name,
         .ml_meth = func,
@@ -889,7 +892,7 @@ pub fn typeGetModuleState(tp: *c.PyTypeObject) PythonError!*anyopaque {
 
 /// Create a module from a PyModuleDef (single-phase init).
 /// Caller must decref the result.
-pub fn createModule(def: *c.PyModuleDef) PythonError!*PyObject {
+fn createModule(def: *c.PyModuleDef) PythonError!*PyObject {
     return c.PyModule_Create(def) orelse return error.PythonError;
 }
 

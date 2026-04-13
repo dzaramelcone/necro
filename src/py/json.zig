@@ -1,15 +1,16 @@
 //! Serialize arbitrary Python values to JSON.
 
 const std = @import("std");
+const necro = @import("necro");
 const ffi = @import("ffi.zig");
-const json_serialize = @import("../json/serialize.zig");
-const row = @import("../db/row.zig");
+const json_serialize = necro.json;
+const row = necro.pg.row;
 
 const PyObject = ffi.PyObject;
 const Serializer = json_serialize.Serializer;
 
-pub const WriteError = ffi.PythonError || error{BufferTooSmall};
-const InternalError = WriteError || error{UnsupportedType};
+const WriteError = ffi.PythonError || error{ BufferTooSmall, UnsupportedType };
+const InternalError = WriteError;
 
 fn writeString(s: *Serializer, obj: *PyObject) InternalError!void {
     const utf8 = try ffi.unicodeAsUTF8(obj);
@@ -152,13 +153,9 @@ fn writeValue(s: *Serializer, obj: *PyObject) InternalError!void {
     return error.UnsupportedType;
 }
 
-pub fn tryWrite(obj: *PyObject, buf: []u8, pos: *usize) WriteError!bool {
+pub fn write(obj: *PyObject, buf: []u8, pos: *usize) WriteError!void {
     var serializer = Serializer.init(buf);
     serializer.pos = pos.*;
-    writeValue(&serializer, obj) catch |err| switch (err) {
-        error.UnsupportedType => return false,
-        else => return @errorCast(err),
-    };
+    try writeValue(&serializer, obj);
     pos.* = serializer.pos;
-    return true;
 }

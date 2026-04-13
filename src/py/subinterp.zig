@@ -7,7 +7,7 @@ const std = @import("std");
 const ffi = @import("ffi.zig");
 const module = @import("module.zig");
 
-const log = std.log.scoped(.@"necro/subinterp");
+const log = std.log.scoped(.@"necro/py/subinterp");
 
 /// Per-worker sub-interpreter: owns a GIL lock and a necro.core module instance.
 pub const WorkerPyContext = struct {
@@ -17,25 +17,25 @@ pub const WorkerPyContext = struct {
     /// Create a sub-interpreter for the calling thread.
     /// Acquires the main GIL (no-op if already held), creates the sub-interpreter,
     /// imports the user's app module. On error, cleans up via errdefer.
-    pub fn init(module_ref: []const u8) !WorkerPyContext {
-        log.debug("creating sub-interpreter for module_ref={s}", .{module_ref});
+    pub fn init(module_name: []const u8, search_path: []const u8) !WorkerPyContext {
+        log.debug("creating sub-interpreter for module={s} path={s}", .{ module_name, search_path });
         _ = ffi.gilStateEnsure();
 
         const tstate = try ffi.newInterpreter(.{});
         errdefer ffi.Py_EndInterpreter(tstate);
 
-        // Sub-interpreters start with minimal sys.path - add cwd and site packages.
+        // Sub-interpreters start with minimal sys.path - prepend the caller's
+        // module directory and load site packages.
         const sys_path = try ffi.sysGetObject("path");
-        const cwd = try ffi.unicodeFromString(".");
-        defer ffi.decref(cwd);
-        try ffi.listInsert(sys_path, 0, cwd);
+        const search = try ffi.unicodeFromSlice(search_path.ptr, search_path.len);
+        defer ffi.decref(search);
+        try ffi.listInsert(sys_path, 0, search);
         const site_mod = try ffi.importModule("site");
         ffi.decref(site_mod);
 
-        // Import the user module (form is "my_app:app"). The top-level code
-        // runs as a side effect, registering route handlers via decorators.
-        const sep = std.mem.indexOfScalar(u8, module_ref, ':') orelse return error.MalformedModuleRef;
-        const user_mod = try ffi.importModuleSlice(module_ref[0..sep]);
+        // Import the user module. The top-level code runs as a side effect,
+        // registering route handlers via decorators.
+        const user_mod = try ffi.importModuleSlice(module_name);
         ffi.decref(user_mod);
 
         const necro_mod = try ffi.importModule("necro.core");

@@ -63,7 +63,7 @@ pub const future_type_spec = ffi.TypeSpec{
     .basicsize = @sizeOf(futures.FutureObject),
     .itemsize = 0,
     .flags = gc_type_flags,
-    .slots = &future_type_slots,
+    .slots = @ptrCast(@constCast(&future_type_slots)),
 };
 
 pub const task_type_spec = ffi.TypeSpec{
@@ -71,7 +71,7 @@ pub const task_type_spec = ffi.TypeSpec{
     .basicsize = @sizeOf(futures.TaskObject),
     .itemsize = 0,
     .flags = gc_type_flags,
-    .slots = &task_type_slots,
+    .slots = @ptrCast(@constCast(&task_type_slots)),
 };
 
 pub const future_iter_type_spec = ffi.TypeSpec{
@@ -79,5 +79,5 @@ pub const future_iter_type_spec = ffi.TypeSpec{
     .basicsize = @sizeOf(futures.FutureIterObject),
     .itemsize = 0,
     .flags = ffi.flags.DEFAULT,
-    .slots = &future_iter_type_slots,
+    .slots = @ptrCast(@constCast(&future_iter_type_slots)),
 };

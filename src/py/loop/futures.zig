@@ -1,20 +1,21 @@
 //! Zig-native futures for the necro async loop.
 
 const std = @import("std");
+const necro = @import("necro");
 const ffi = @import("../ffi.zig");
-const resp = @import("../../redis/resp.zig");
-const stmt = @import("../../db/stmt.zig");
-const db = @import("../db.zig");
+const resp = necro.redis;
+const stmt = necro.pg.stmt;
 
+const c = ffi.c; // needed by callback section - cleanup pending
 const PyObject = ffi.PyObject;
 const PyTypeObject = ffi.PyTypeObject;
 const VisitProc = ffi.VisitProc;
 
-pub const MAX_REDIS_ARGS = 7;
-pub const MAX_PG_ARGS = 3;
+const MAX_REDIS_ARGS = 7;
+const MAX_PG_ARGS = 3;
 
 /// Fixed-capacity owned reference slots. `clear` and `traverse` keep the
-/// count in sync with the slots — callers can't decref without resetting.
+/// count in sync with the slots - callers can't decref without resetting.
 fn Args(comptime MAX: comptime_int) type {
     return struct {
         slots: [MAX]?*PyObject = [_]?*PyObject{null} ** MAX,
@@ -45,13 +46,13 @@ pub const TypeState = extern struct {
     future_iter_type: ?*PyObject = null,
 };
 
-pub const TypeSpecs = struct {
+const TypeSpecs = struct {
     future: *const ffi.TypeSpec,
     task: *const ffi.TypeSpec,
     future_iter: *const ffi.TypeSpec,
 };
 
-pub const Step = union(enum) {
+const Step = union(enum) {
     none,
     redis: RedisStep,
     pg: PgStep,
@@ -62,7 +63,7 @@ pub const SubmittedYield = union(enum) {
     pg: PgYield,
 };
 
-pub const FutureState = enum(u8) {
+const FutureState = enum(u8) {
     pending,
     cancelled,
     finished,
@@ -141,25 +142,25 @@ pub fn traverseTypes(type_state: *const TypeState, visit: VisitProc, arg: ?*anyo
     return 0;
 }
 
-pub fn allocFuture(type_obj: *PyObject, type_state: *TypeState) ffi.PythonError!*FutureObject {
+fn allocFuture(type_obj: *PyObject, type_state: *TypeState) ffi.PythonError!*FutureObject {
     const self = try ffi.alloc(FutureObject, type_obj);
     self.type_state = type_state;
     return self;
 }
 
-pub fn allocTask(type_obj: *PyObject, type_state: *TypeState) ffi.PythonError!*TaskObject {
+fn allocTask(type_obj: *PyObject, type_state: *TypeState) ffi.PythonError!*TaskObject {
     const self = try ffi.alloc(TaskObject, type_obj);
     self.future.type_state = type_state;
     return self;
 }
 
-pub fn coerceException(value: *PyObject) ?*PyObject {
+fn coerceException(value: *PyObject) ?*PyObject {
     if (ffi.isTypeObject(value)) return ffi.callObjectRaw(value, null) catch null;
     ffi.incref(value);
     return value;
 }
 
-pub fn isManagedFuture(type_state: *const TypeState, obj: *PyObject) bool {
+fn isManagedFuture(type_state: *const TypeState, obj: *PyObject) bool {
     const future_type = type_state.future_type orelse return false;
     const future_tp: *PyTypeObject = @ptrCast(@alignCast(future_type));
     return ffi.isSubtype(ffi.objType(obj), future_tp);
@@ -172,7 +173,7 @@ pub fn consumeYield(
     redis_buf: ?[]u8,
     pg_buf: ?[]u8,
     pg_stmt_cache: ?*stmt.Cache,
-    pg_conn_prepared: ?*[stmt.MAX_STMTS]bool,
+    pg_conn_prepared: ?*[stmt.STMT_CACHE_CAPACITY]bool,
 ) !SubmittedYield {
     if (!isManagedFuture(type_state, yielded)) return error.UnknownFutureType;
     const future: *FutureObject = @ptrCast(@alignCast(yielded));
@@ -714,7 +715,7 @@ pub const PgYield = struct {
     model_cls: ?*PyObject,
 };
 
-pub const PgStep = struct {
+const PgStep = struct {
     mode: PgMode,
     args: Args(MAX_PG_ARGS) = .{},
 };
@@ -735,13 +736,13 @@ pub fn createPgFuture(
     return @ptrCast(self);
 }
 
-pub fn submitPg(
+fn submitPg(
     yielded: *PyObject,
     py_coro: *PyObject,
     step: *const PgStep,
     buf: ?[]u8,
     stmt_cache: ?*stmt.Cache,
-    prepared: ?*[stmt.MAX_STMTS]bool,
+    prepared: ?*[stmt.STMT_CACHE_CAPACITY]bool,
 ) !SubmittedYield {
     const out = buf orelse return error.NoPgSendBuffer;
     const cache = stmt_cache orelse return error.NoPgStmtCache;
@@ -752,7 +753,7 @@ pub fn submitPg(
     const sql = std.mem.span(try ffi.unicodeAsUTF8(sql_obj));
 
     var params: stmt.ParamBuffer = .{};
-    try db.paramsFromTuple(params_obj, &params);
+    try params.fromTuple(params_obj);
 
     const encoded = try cache.encode(out, sql, prep, &params);
 
@@ -773,7 +774,7 @@ pub fn submitPg(
     };
 }
 
-pub const RedisStep = struct {
+const RedisStep = struct {
     cmd: []const u8,
     args: Args(MAX_REDIS_ARGS) = .{},
 };
@@ -799,7 +800,7 @@ pub fn createRedisFuture(
     return @ptrCast(self);
 }
 
-pub fn submitRedis(
+fn submitRedis(
     yielded: *PyObject,
     py_coro: *PyObject,
     step: *const RedisStep,
