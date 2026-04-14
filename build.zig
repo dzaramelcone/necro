@@ -1,26 +1,33 @@
 const std = @import("std");
 
-fn linkPython(m: *std.Build.Module) void {
+fn pyQuery(b: *std.Build, expr: []const u8) []const u8 {
+    return std.mem.trim(u8, b.run(&.{ "python3.14", "-c", expr }), " \n\r\t");
+}
+
+fn addPython(b: *std.Build, m: *std.Build.Module, link_lib: bool) void {
     const target = m.resolved_target.?.result;
-    switch (target.os.tag) {
-        .macos => {
-            m.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/python@3.14/Frameworks/Python.framework/Versions/3.14/include/python3.14" });
-            m.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/python@3.14/Frameworks/Python.framework/Versions/3.14/lib" });
+    const sysroot = switch (target.os.tag) {
+        .macos => switch (target.cpu.arch) {
+            .aarch64 => "macos-aarch64",
+            else => @panic("necro only supports macos on aarch64"),
         },
         .linux => switch (target.cpu.arch) {
-            .aarch64 => {
-                m.addIncludePath(.{ .cwd_relative = "sysroot/linux-aarch64/include/python3.14" });
-                m.addLibraryPath(.{ .cwd_relative = "sysroot/linux-aarch64/lib" });
-            },
-            .x86_64 => {
-                m.addIncludePath(.{ .cwd_relative = "sysroot/linux-x86_64/include/python3.14" });
-                m.addLibraryPath(.{ .cwd_relative = "sysroot/linux-x86_64/lib" });
-            },
+            .aarch64 => "linux-aarch64",
+            .x86_64 => "linux-x86_64",
             else => @panic("necro only supports linux on aarch64 or x86_64"),
         },
         else => @panic("necro only supports macos and linux"),
+    };
+    m.addIncludePath(.{ .cwd_relative = b.fmt("sysroot/{s}/include/python3.14", .{sysroot}) });
+    if (link_lib) {
+        const libdir = switch (target.os.tag) {
+            .macos => pyQuery(b, "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))"),
+            .linux => b.fmt("sysroot/{s}/lib", .{sysroot}),
+            else => unreachable,
+        };
+        m.addLibraryPath(.{ .cwd_relative = libdir });
+        m.linkSystemLibrary("python3.14", .{});
     }
-    m.linkSystemLibrary("python3.14", .{});
     m.link_libc = true;
 }
 
@@ -28,6 +35,10 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const metrics = b.option(bool, "metrics", "Enable pipeline metrics") orelse false;
+    const is_macos = target.result.os.tag == .macos;
+
+    const options = b.addOptions();
+    options.addOption(bool, "metrics", metrics);
 
     const pyext = b.addLibrary(.{
         .linkage = .dynamic,
@@ -39,17 +50,14 @@ pub fn build(b: *std.Build) void {
             .strip = optimize != .Debug,
         }),
     });
-    const options = b.addOptions();
-    options.addOption(bool, "metrics", metrics);
     pyext.root_module.addOptions("build_options", options);
     pyext.root_module.addImport("necro", pyext.root_module);
-    const os = target.result.os.tag;
-    pyext.lto = if (os == .macos) null else .full;
+    pyext.lto = if (is_macos) null else .full;
     pyext.link_gc_sections = true;
-    linkPython(pyext.root_module);
+    if (is_macos) pyext.linker_allow_shlib_undefined = true;
+    addPython(b, pyext.root_module, false);
     b.installArtifact(pyext);
 
-    const test_step = b.step("test", "Run unit tests");
     const unit_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/root.zig"),
@@ -59,7 +67,8 @@ pub fn build(b: *std.Build) void {
     });
     unit_tests.root_module.addOptions("build_options", options);
     unit_tests.root_module.addImport("necro", unit_tests.root_module);
-    linkPython(unit_tests.root_module);
-    const run_tests = b.addRunArtifact(unit_tests);
-    test_step.dependOn(&run_tests.step);
+    addPython(b, unit_tests.root_module, true);
+
+    const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(&b.addRunArtifact(unit_tests).step);
 }

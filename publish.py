@@ -64,5 +64,5 @@ if args.dry_run:
 else:
     write_version(*new)
     subprocess.run(["uv", "run", "build.py"], check=True)
-    subprocess.run(["uv", "publish", "--sign"], check=True)
+    subprocess.run(["uv", "publish"], check=True)
     print(f"\n  published necro {version}")

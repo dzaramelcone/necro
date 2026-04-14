@@ -35,6 +35,7 @@ class LibExt(StrEnum):
 
 PYTHON_TAG = "cp314"
 ABI_TAG = PYTHON_TAG
+SOABI_PREFIX = "cpython-314"
 LIB_DIR = Path("zig-out/lib")
 PKG_DIR = Path("python/necro")
 LIB_BASE = "libcore"
@@ -64,7 +65,7 @@ class ZigBuildHook(BuildHookInterface):
         )
 
         src = LIB_DIR / f"{LIB_BASE}.{lib_ext}"
-        so_name = f"{SO_BASE}.{PYTHON_TAG}-{so_suffix or zig_target}.so"
+        so_name = f"{SO_BASE}.{SOABI_PREFIX}-{so_suffix or zig_target}.so"
         dest = PKG_DIR / so_name
         dest.unlink(missing_ok=True)
         shutil.copy2(src, dest)
