@@ -6,12 +6,14 @@
 """Build one wheel per platform."""
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
 from hatch import WheelTag
 
 dist = Path("dist")
+shutil.rmtree(dist, ignore_errors=True)
 dist.mkdir(exist_ok=True)
 
 for tag in WheelTag:
