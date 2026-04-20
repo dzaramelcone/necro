@@ -196,17 +196,6 @@ pub fn setResult(obj: *PyObject, result: *PyObject) !void {
     future.state = .finished;
 }
 
-pub fn setException(obj: *PyObject, exc: *PyObject) !void {
-    const future: *FutureObject = @ptrCast(@alignCast(obj));
-    if (future.state != .pending) return error.InvalidFutureState;
-    const owned = coerceException(exc) orelse return error.PythonError;
-    ffi.clearOptional(&future.result);
-    ffi.clearOptional(&future.exception);
-    ffi.clearOptional(&future.exception_tb);
-    future.exception = owned;
-    future.state = .finished;
-}
-
 // ── Slot / method implementations (merged from callbacks.zig) ───────
 
 fn clearFutureBase(self: *FutureObject) void {
@@ -436,16 +425,13 @@ pub fn futureCancelMethod(self_obj: ?*PyObject, args: ?*PyObject, kwargs: ?*PyOb
 }
 
 pub fn futureSetResultMethod(self_obj: ?*PyObject, arg: ?*PyObject) callconv(.c) ?*PyObject {
-    const self: *FutureObject = @ptrCast(@alignCast(self_obj orelse return null));
-    if (self.state != .pending) {
-        ffi.errSetString(ffi.exc.RuntimeError(), "Future already done");
-        return null;
-    }
-    ffi.clearOptional(&self.result);
-    ffi.clearOptional(&self.exception);
-    ffi.clearOptional(&self.exception_tb);
-    self.result = ffi.increfBorrowed(arg orelse ffi.none());
-    self.state = .finished;
+    const obj = self_obj orelse return null;
+    setResult(obj, arg orelse ffi.none()) catch |err| switch (err) {
+        error.InvalidFutureState => {
+            ffi.errSetString(ffi.exc.RuntimeError(), "Future already done");
+            return null;
+        },
+    };
     return ffi.getNone();
 }
 

@@ -9,5 +9,4 @@ pub const Tag = enum(u8) {
     redis_recv,
     pg_send,
     pg_recv,
-    wake,
 };

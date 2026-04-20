@@ -3,7 +3,7 @@
 
 const std = @import("std");
 
-const MAX_HEADERS = 4;
+const MAX_RESPONSE_HEADERS = 4;
 
 const Header = struct {
     name: []const u8,
@@ -77,7 +77,7 @@ pub fn statusLine(status: std.http.Status) error{UnsupportedStatus}![]const u8 {
 
 pub const Response = struct {
     status: std.http.Status,
-    headers: [MAX_HEADERS]Header = undefined,
+    headers: [MAX_RESPONSE_HEADERS]Header = undefined,
     header_count: u8 = 0,
     body: ?[]const u8 = null,
 
@@ -86,7 +86,7 @@ pub const Response = struct {
     }
 
     pub fn addHeader(self: *Response, name: []const u8, value: []const u8) void {
-        std.debug.assert(self.header_count < MAX_HEADERS);
+        std.debug.assert(self.header_count < MAX_RESPONSE_HEADERS);
         self.headers[self.header_count] = .{ .name = name, .value = value };
         self.header_count += 1;
     }

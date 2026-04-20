@@ -46,39 +46,68 @@ pub fn requestShutdown() void {
     const n = pipeline_count.load(.acquire);
     var i: usize = 0;
     while (i < n) : (i += 1) {
-        if (@atomicLoad(?*runtime.Pipeline, &pipeline_registry[i], .acquire)) |pl| {
+        if (@atomicLoad(
+            ?*runtime.Pipeline,
+            &pipeline_registry[i],
+            .acquire,
+        )) |pl| {
             pl.wake();
         }
     }
 }
 
 pub const Server = struct {
-    router: http.Router,
+    router: http.router.Router,
     host: []const u8,
     port: u16,
     num_threads: u16,
     backlog: u31,
     idle_ms: i64,
+    exchange_timeout_ms: i64,
+    tls_cert_path: ?[]const u8,
+    tls_key_path: ?[]const u8,
 
-    pub fn init(alloc: std.mem.Allocator, host: []const u8, port: u16) Server {
+    pub fn init(host: []const u8, port: u16) Server {
         return .{
-            .router = http.Router.init(alloc),
+            .router = .{},
             .host = host,
             .port = port,
             .num_threads = 1,
             .backlog = 2048,
-            .idle_ms = 30_000,
+            .idle_ms = 300_000,
+            .exchange_timeout_ms = 30_000,
+            .tls_cert_path = null,
+            .tls_key_path = null,
         };
-    }
-
-    pub fn deinit(self: *Server) void {
-        self.router.deinit();
     }
 };
 
 pub fn run(allocator: std.mem.Allocator, server: *const Server, module_name: []const u8, search_path: []const u8, version: []const u8) !void {
     shutdown_flag.store(false, .release);
     resetRegistry();
+
+    const cert_set = server.tls_cert_path != null;
+    const key_set = server.tls_key_path != null;
+    if (cert_set != key_set) {
+        log.err("--cert and --key must be supplied together", .{});
+        std.posix.exit(2);
+    }
+    if (cert_set and key_set) {
+        std.fs.cwd().access(server.tls_cert_path.?, .{}) catch |err| {
+            log.err("tls cert/key not readable: {s}: {}", .{
+                server.tls_cert_path.?,
+                err,
+            });
+            std.posix.exit(2);
+        };
+        std.fs.cwd().access(server.tls_key_path.?, .{}) catch |err| {
+            log.err("tls cert/key not readable: {s}: {}", .{
+                server.tls_key_path.?,
+                err,
+            });
+            std.posix.exit(2);
+        };
+
     const num_threads = server.num_threads;
 
     const first_socket = try Socket.initTcp(server.host, server.port);
@@ -115,6 +144,13 @@ pub fn run(allocator: std.mem.Allocator, server: *const Server, module_name: []c
         rises,
     });
 
+    if (cert_set and key_set) {
+        std.debug.print("    tls: cert={s} key={s}\n\n", .{
+            server.tls_cert_path.?,
+            server.tls_key_path.?,
+        });
+    }
+
     var threads: std.ArrayListUnmanaged(std.Thread) = .{};
     defer threads.deinit(allocator);
 
@@ -150,7 +186,6 @@ fn pipelineThreadMain(allocator: std.mem.Allocator, server: *const Server, exist
         };
     }
     const listen_socket = if (existing_socket) |s| s else blk: {
-        // Additional threads create their own socket with SO_REUSEPORT
         const s = try Socket.initTcp(server.host, server.port);
         try s.enableReusePort();
         try s.bind();
@@ -165,11 +200,21 @@ fn pipelineThreadMain(allocator: std.mem.Allocator, server: *const Server, exist
     };
     defer worker_py.deinit();
 
-    var conns = try necro.core.Pool(runtime.Conn).init(allocator, 1024);
+    var conns = try necro.core.Pool(necro.http.exchange.Conn).init(allocator, 1024);
     defer conns.deinit();
 
     const pl = try allocator.create(runtime.Pipeline);
     defer allocator.destroy(pl);
+    try pl.init(
+        allocator,
+        &conns,
+        1024,
+        &server.router,
+        &worker_py,
+        server.idle_ms,
+        server.exchange_timeout_ms,
+    );
+    necro.pg.row.init(allocator);
     try pl.init(allocator, &conns, 1024, &server.router, &worker_py, server.idle_ms);
 
     const redis_host = std.posix.getenv("REDIS_HOST") orelse "127.0.0.1";
@@ -199,23 +244,6 @@ fn pipelineThreadMain(allocator: std.mem.Allocator, server: *const Server, exist
     registerPipeline(pl);
 
     try pl.run();
-}
-
-fn formatIsoUtcNow(buf: []u8) []const u8 {
-    const now = std.time.timestamp();
-    const epoch_seconds = std.time.epoch.EpochSeconds{ .secs = @intCast(now) };
-    const epoch_day = epoch_seconds.getEpochDay();
-    const day_seconds = epoch_seconds.getDaySeconds();
-    const year_day = epoch_day.calculateYearDay();
-    const month_day = year_day.calculateMonthDay();
-    return std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
-        year_day.year,
-        @intFromEnum(month_day.month),
-        month_day.day_index + 1,
-        day_seconds.getHoursIntoDay(),
-        day_seconds.getMinutesIntoHour(),
-        day_seconds.getSecondsIntoMinute(),
-    }) catch buf[0..0];
 }
 
 fn connectTcpNonBlocking(host: []const u8, port: u16) !std.posix.socket_t {

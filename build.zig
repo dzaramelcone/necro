@@ -34,11 +34,9 @@ fn addPython(b: *std.Build, m: *std.Build.Module, link_lib: bool) void {
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const metrics = b.option(bool, "metrics", "Enable pipeline metrics") orelse false;
     const is_macos = target.result.os.tag == .macos;
 
     const options = b.addOptions();
-    options.addOption(bool, "metrics", metrics);
 
     const pyext = b.addLibrary(.{
         .linkage = .dynamic,

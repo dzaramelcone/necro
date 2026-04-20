@@ -1,8 +1,7 @@
 const ffi = @import("../ffi.zig");
 const futures = @import("futures.zig");
 
-const type_flags: c_ulong = ffi.flags.DEFAULT | ffi.flags.BASETYPE;
-const gc_type_flags: c_ulong = type_flags | ffi.flags.HAVE_GC;
+const gc_type_flags: c_ulong = ffi.flags.DEFAULT | ffi.flags.BASETYPE | ffi.flags.HAVE_GC;
 
 const slot = ffi.typeSlot;
 const methodDef = ffi.methodDef;

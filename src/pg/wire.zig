@@ -34,16 +34,10 @@ pub const BackendTag = struct {
     pub const data_row: u8 = 'D';
     pub const command_complete: u8 = 'C';
     pub const error_response: u8 = 'E';
-    pub const notice_response: u8 = 'N';
-    pub const notification_response: u8 = 'A';
     pub const parameter_status: u8 = 'S';
     pub const parse_complete: u8 = '1';
     pub const bind_complete: u8 = '2';
-    pub const close_complete: u8 = '3';
     pub const no_data: u8 = 'n';
-    pub const empty_query_response: u8 = 'I';
-    pub const copy_in_response: u8 = 'G';
-    pub const copy_out_response: u8 = 'H';
 };
 
 pub const AuthType = enum(u32) {
@@ -283,21 +277,6 @@ pub fn encodeDescribe(buf: []u8, kind: u8, name: []const u8) []const u8 {
     return buf[0..pos];
 }
 
-pub fn encodeExecute(buf: []u8) []const u8 {
-    const length: u32 = 4 + 1 + 4;
-    var pos: usize = 0;
-
-    buf[pos] = Tag.execute;
-    pos += 1;
-    @memcpy(buf[pos..][0..4], &mem.toBytes(mem.nativeTo(u32, length, .big)));
-    pos += 4;
-    buf[pos] = 0;
-    pos += 1;
-    @memset(buf[pos..][0..4], 0);
-    pos += 4;
-
-    return buf[0..pos];
-}
 pub fn encodeSync(buf: []u8) []const u8 {
     buf[0] = Tag.sync;
     @memcpy(buf[1..5], &mem.toBytes(mem.nativeTo(u32, @as(u32, 4), .big)));
@@ -623,10 +602,10 @@ test "wire protocol bind with params" {
     // Second encode produces only Bind+Execute starting at offset 0.
     const e0 = try cache.encode(&buf, "SELECT 0", &conn_prepared, &.{});
     try std.testing.expectEqual(Tag.bind, buf[0]);
-    // Bind length for zero-param s0: prefix_len(13) + 0 + 2 - 1 = 14
-    try std.testing.expectEqual(@as(u32, 14), mem.readInt(u32, buf[1..5], .big));
-    // bytes_written = 15 (Bind) + 10 (Execute) = 25
-    try std.testing.expectEqual(@as(usize, 25), e0.bytes_written);
+    // Bind length for zero-param s0: prefix_len(13) + 0 + result_formats(4) - 1 = 16
+    try std.testing.expectEqual(@as(u32, 16), mem.readInt(u32, buf[1..5], .big));
+    // bytes_written = 17 (Bind) + 10 (Execute) = 27
+    try std.testing.expectEqual(@as(usize, 27), e0.bytes_written);
 
     // Case 1: one 5-byte ASCII param "idea1", stmt "s1"
     var params1: stmt.ParamBuffer = .{ .len = 1 };
@@ -634,10 +613,10 @@ test "wire protocol bind with params" {
     _ = try cache.encode(&buf, "SELECT $1::text AS x", &conn_prepared, &params1);
     const e1 = try cache.encode(&buf, "SELECT $1::text AS x", &conn_prepared, &params1);
     try std.testing.expectEqual(Tag.bind, buf[0]);
-    // Bind length for one-param s1: prefix_len(13) + (4+5) + 2 - 1 = 23
-    try std.testing.expectEqual(@as(u32, 23), mem.readInt(u32, buf[1..5], .big));
-    // bytes_written = 24 (Bind) + 10 (Execute) = 34
-    try std.testing.expectEqual(@as(usize, 34), e1.bytes_written);
+    // Bind length for one-param s1: prefix_len(13) + (4+5) + result_formats(4) - 1 = 25
+    try std.testing.expectEqual(@as(u32, 25), mem.readInt(u32, buf[1..5], .big));
+    // bytes_written = 26 (Bind) + 10 (Execute) = 36
+    try std.testing.expectEqual(@as(usize, 36), e1.bytes_written);
     try std.testing.expectEqual(@as(u16, 1), mem.readInt(u16, buf[11..13], .big));
     try std.testing.expectEqual(@as(i32, 5), mem.readInt(i32, buf[13..17], .big));
     try std.testing.expectEqualStrings("idea1", buf[17..22]);
@@ -647,8 +626,8 @@ test "wire protocol bind with params" {
     params_null.setNull(0);
     _ = try cache.encode(&buf, "SELECT $1::text AS y", &conn_prepared, &params_null);
     const e2 = try cache.encode(&buf, "SELECT $1::text AS y", &conn_prepared, &params_null);
-    // bytes_written = 19 (Bind, one null i32) + 10 (Execute) = 29
-    try std.testing.expectEqual(@as(usize, 29), e2.bytes_written);
+    // bytes_written = 21 (Bind, one null i32) + 10 (Execute) = 31
+    try std.testing.expectEqual(@as(usize, 31), e2.bytes_written);
     try std.testing.expectEqual(@as(i32, -1), mem.readInt(i32, buf[13..17], .big));
 }
 

@@ -67,7 +67,7 @@ fn isCoroutineFunction(obj: *PyObject) bool {
 
 fn inspectHandlerFlags(handler_obj: *PyObject) HandlerFlags {
     var flags = HandlerFlags{};
-    flags.is_async = ffi.isExactCoroutine(handler_obj) or isCoroutineFunction(handler_obj);
+    flags.is_async = isCoroutineFunction(handler_obj);
 
     const code = ffi.getAttrRaw(handler_obj, "__code__") catch {
         ffi.errClear();
@@ -191,8 +191,8 @@ fn pyRun(self: ?*PyObject, args: ?*PyObject) callconv(.c) ?*PyObject {
     };
     const tuple = args.?;
     const argc = ffi.tupleSize(tuple);
-    if (argc != 7) {
-        ffi.errSetString(ffi.exc.TypeError(), "run(host, port, threads, module, search_path, backlog, version) requires 7 arguments");
+    if (argc != 9) {
+        ffi.errSetString(ffi.exc.TypeError(), "run(host, port, threads, module, search_path, backlog, version, cert, key) requires 9 arguments");
         return null;
     }
 
@@ -203,6 +203,8 @@ fn pyRun(self: ?*PyObject, args: ?*PyObject) callconv(.c) ?*PyObject {
     const search_path_obj = ffi.tupleGetItem(tuple, 4).?;
     const backlog_obj = ffi.tupleGetItem(tuple, 5).?;
     const version_obj = ffi.tupleGetItem(tuple, 6).?;
+    const cert_obj = ffi.tupleGetItem(tuple, 7).?;
+    const key_obj = ffi.tupleGetItem(tuple, 8).?;
 
     if (!ffi.isString(host_obj)) {
         ffi.errSetString(ffi.exc.TypeError(), "run: host must be a string");
@@ -232,11 +234,21 @@ fn pyRun(self: ?*PyObject, args: ?*PyObject) callconv(.c) ?*PyObject {
         ffi.errSetString(ffi.exc.TypeError(), "run: version must be a string");
         return null;
     }
+    if (!ffi.isString(cert_obj)) {
+        ffi.errSetString(ffi.exc.TypeError(), "run: cert must be a string");
+        return null;
+    }
+    if (!ffi.isString(key_obj)) {
+        ffi.errSetString(ffi.exc.TypeError(), "run: key must be a string");
+        return null;
+    }
 
     const host_span = std.mem.span(ffi.unicodeAsUTF8(host_obj) catch return null);
     const module_span = std.mem.span(ffi.unicodeAsUTF8(module_obj) catch return null);
     const search_path_span = std.mem.span(ffi.unicodeAsUTF8(search_path_obj) catch return null);
     const version_span = std.mem.span(ffi.unicodeAsUTF8(version_obj) catch return null);
+    const cert_span = std.mem.span(ffi.unicodeAsUTF8(cert_obj) catch return null);
+    const key_span = std.mem.span(ffi.unicodeAsUTF8(key_obj) catch return null);
     const port_long = ffi.longAsLong(port_obj) catch return null;
     const threads_long = ffi.longAsLong(threads_obj) catch return null;
     const backlog_long = ffi.longAsLong(backlog_obj) catch return null;
@@ -254,7 +266,10 @@ fn pyRun(self: ?*PyObject, args: ?*PyObject) callconv(.c) ?*PyObject {
         return null;
     }
 
-    driver.startServer(mod, host_span, @intCast(port_long), @intCast(threads_long), module_span, search_path_span, @intCast(backlog_long), version_span) catch return null;
+    const cert_opt: ?[]const u8 = if (cert_span.len == 0) null else cert_span;
+    const key_opt: ?[]const u8 = if (key_span.len == 0) null else key_span;
+
+    driver.startServer(mod, host_span, @intCast(port_long), @intCast(threads_long), module_span, search_path_span, @intCast(backlog_long), version_span, cert_opt, key_opt) catch return null;
     return ffi.getNone();
 }
 

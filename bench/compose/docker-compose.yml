@@ -7,6 +7,8 @@ services:
       POSTGRES_DB: necro
       POSTGRES_HOST_AUTH_METHOD: md5
       POSTGRES_INITDB_ARGS: "--auth-host=md5"
+  redis:
+    image: codeberg.org/redict/redict:latest
   bench:
     build: .
     ports:
@@ -16,12 +18,14 @@ services:
     privileged: true
     depends_on:
       - postgres
+      - redis
     environment:
       PG_HOST: postgres
       PG_PORT: "5432"
       PG_USER: necro
       PG_PASS: necro
       PG_DB: necro
+      REDIS_HOST: redis
     volumes:
       - ../../python:/bench/necro_root
       - ../../zig-out/lib:/bench/necro_lib:ro
@@ -29,6 +33,7 @@ services:
       - ./bench_hello.py:/bench/bench_hello.py:ro
       - ./bench_plaintext.py:/bench/bench_plaintext.py:ro
       - ./bench_db.py:/bench/bench_db.py:ro
+      - ./bench_redis.py:/bench/bench_redis.py:ro
       - ./bench_fastapi.py:/bench/bench_fastapi.py:ro
       - ./bench_starlette.py:/bench/bench_starlette.py:ro
       - ./bench_litestar.py:/bench/bench_litestar.py:ro

@@ -75,16 +75,7 @@ def run_with_reload(args: argparse.Namespace) -> None:
         sys.executable,
         "-m",
         "necro.cli",
-        "host",
-        args.module,
-        "--host",
-        args.host,
-        "--port",
-        str(args.port),
-        "--threads",
-        str(args.threads),
-        "--backlog",
-        str(args.backlog),
+        *[a for a in sys.argv[1:] if a != "--reload"],
     ]
     proc: subprocess.Popen | None = None
 
@@ -126,7 +117,17 @@ def run_server(args: argparse.Namespace) -> None:
     sys.path.insert(0, ".")
     mod = importlib.import_module(args.module)
     search_path = os.path.dirname(os.path.abspath(mod.__file__))
-    core.run(args.host, args.port, args.threads, args.module, search_path, args.backlog, __version__)
+    core.run(
+        args.host,
+        args.port,
+        args.threads,
+        args.module,
+        search_path,
+        args.backlog,
+        __version__,
+        args.cert or "",
+        args.key or "",
+    )
 
 
 def main():
@@ -143,6 +144,8 @@ def main():
     host_parser.add_argument("--port", type=int, default=config.get("port", 8080))
     host_parser.add_argument("--threads", type=int, default=config.get("threads", 1))
     host_parser.add_argument("--backlog", type=int, default=config.get("backlog", 2048))
+    host_parser.add_argument("--cert", default=None)
+    host_parser.add_argument("--key", default=None)
     host_parser.add_argument(
         "--reload", action="store_true", help="auto-reload on .py changes"
     )

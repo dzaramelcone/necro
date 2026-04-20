@@ -41,6 +41,14 @@ pub fn Queue(comptime T: type, comptime capacity: usize) type {
             self.tail = 0;
             self.len = 0;
         }
+
+        pub fn replace(self: *Self, old: T, new: T) void {
+            var i: usize = 0;
+            while (i < self.len) : (i += 1) {
+                const idx = (self.head + i) & MASK;
+                if (self.items[idx] == old) self.items[idx] = new;
+            }
+        }
     };
 }
 
@@ -93,6 +101,10 @@ pub fn BatchQueue(comptime T: type, comptime capacity: usize) type {
         pub fn isEmpty(self: *const Self) bool {
             return self.items.isEmpty();
         }
+
+        pub fn replace(self: *Self, old: T, new: T) void {
+            self.items.replace(old, new);
+        }
     };
 }
 
@@ -142,4 +154,15 @@ test "ring overflow returns error" {
 
 test "ring rejects non-power-of-two capacity at comptime" {
     // Negative test: Queue(u32, 1000) would fail comptime; not exercised here.
+}
+
+test "redis accounting: new_queries positive after fresh enqueue" {
+    var waiter_q: Queue(u32, 4) = .{};
+    const in_flight: usize = 0;
+
+    try waiter_q.push(42);
+
+    const new_queries = waiter_q.len - in_flight;
+
+    try std.testing.expect(new_queries > 0);
 }

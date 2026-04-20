@@ -4,18 +4,17 @@ const std = @import("std");
 const necro = @import("necro");
 const wire = @import("wire.zig");
 const strategy = @import("strategy.zig");
+const row = @import("row.zig");
 const ffi = necro.py.ffi;
 
 pub const STMT_CACHE_CAPACITY = 128;
 pub const MAX_COLS = 64;
 
-const BIND_SUFFIX_EXECUTE: [12]u8 = .{
-    0x00, 0x00,
-    'E',  0x00,
-    0x00, 0x00,
-    0x09, 0x00,
-    0x00, 0x00,
-    0x00, 0x00,
+const BIND_RESULT_FORMATS_ALL_BINARY: [4]u8 = .{ 0x00, 0x01, 0x00, 0x01 };
+
+const EXECUTE_MSG: [10]u8 = .{
+    'E',  0x00, 0x00, 0x00, 0x09,
+    0x00, 0x00, 0x00, 0x00, 0x00,
 };
 
 fn encodeTextParam(out: []u8, value: ?[]const u8) usize {
@@ -47,35 +46,15 @@ pub const Entry = struct {
 
     col_strategies: [MAX_COLS]strategy.SerializeStrategy = .{.text_escape} ** MAX_COLS,
 
-    json_keys: [2048]u8 = undefined,
-    json_key_offsets: [MAX_COLS + 1]u16 = .{0} ** (MAX_COLS + 1),
-    json_keys_built: bool = false,
+    json: row.JsonKeyTable = .{},
 
     bind_prefix: [32]u8 = undefined,
     bind_prefix_len: u8 = 0,
     param_count: u16 = 0,
     encode_program_built: bool = false,
 
-    pub fn buildJsonKeys(self: *Entry) void {
-        if (self.json_keys_built) return;
-        var pos: u16 = 0;
-        for (0..self.col_count) |i| {
-            self.json_key_offsets[i] = pos;
-            const key = self.col_keys[i];
-            const key_str = ffi.unicodeAsUTF8(key) catch continue;
-            const key_span = std.mem.span(key_str);
-
-            const prefix: u8 = if (i == 0) '{' else ',';
-            if (pos + 1 + 1 + key_span.len + 2 > self.json_keys.len) break;
-            self.json_keys[pos] = prefix;
-            self.json_keys[pos + 1] = '"';
-            @memcpy(self.json_keys[pos + 2 ..][0..key_span.len], key_span);
-            self.json_keys[pos + 2 + key_span.len] = '"';
-            self.json_keys[pos + 2 + key_span.len + 1] = ':';
-            pos += @intCast(2 + key_span.len + 2);
-        }
-        self.json_key_offsets[self.col_count] = pos;
-        self.json_keys_built = true;
+    pub fn buildJsonKeys(self: *Entry) !void {
+        try self.json.build(self.col_keys[0..self.col_count]);
     }
 
     fn buildEncodeProgram(self: *Entry, stmt_name: []const u8, param_count: u16) void {
@@ -246,10 +225,13 @@ pub const Cache = struct {
             params_bytes += written;
         }
 
-        @memcpy(buf[pos..][0..BIND_SUFFIX_EXECUTE.len], BIND_SUFFIX_EXECUTE[0..]);
-        pos += BIND_SUFFIX_EXECUTE.len;
+        @memcpy(buf[pos..][0..BIND_RESULT_FORMATS_ALL_BINARY.len], BIND_RESULT_FORMATS_ALL_BINARY[0..]);
+        pos += BIND_RESULT_FORMATS_ALL_BINARY.len;
 
-        const bind_length: u32 = @intCast(entry.bind_prefix_len + params_bytes + 2 - 1);
+        @memcpy(buf[pos..][0..EXECUTE_MSG.len], EXECUTE_MSG[0..]);
+        pos += EXECUTE_MSG.len;
+
+        const bind_length: u32 = @intCast(entry.bind_prefix_len + params_bytes + BIND_RESULT_FORMATS_ALL_BINARY.len - 1);
         std.mem.writeInt(u32, buf[bind_start + 1 ..][0..4], bind_length, .big);
 
         return .{ .bytes_written = pos, .stmt_idx = idx };

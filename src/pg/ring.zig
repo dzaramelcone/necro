@@ -1,13 +1,6 @@
 const std = @import("std");
-const necro = @import("necro");
 
 const CAPACITY: usize = 64 * 1024;
-
-const RecvBuffer = struct {
-    data: [CAPACITY]u8 = undefined,
-};
-
-pub const RecvPool = necro.core.Pool(RecvBuffer);
 
 const Writable = struct {
     offset: usize,
@@ -15,26 +8,18 @@ const Writable = struct {
 };
 
 pub const Ring = struct {
-    buf_lease: ?necro.core.Lease = null,
-    buf: ?*RecvBuffer = null,
+    buf: []u8,
     read_pos: usize = 0,
     used_len: usize = 0,
     parse_off: usize = 0,
+    ally: std.mem.Allocator,
 
-    pub fn ensure(self: *Ring, pool: *RecvPool) !void {
-        if (self.buf != null) return;
-        const lease = try pool.borrow();
-        self.buf_lease = lease;
-        self.buf = pool.get(lease);
+    pub fn init(ally: std.mem.Allocator) !Ring {
+        return .{ .buf = try ally.alloc(u8, CAPACITY), .ally = ally };
     }
 
-    pub fn deinit(self: *Ring, pool: *RecvPool) void {
-        if (self.buf_lease) |lease| {
-            pool.release(lease);
-            self.buf_lease = null;
-            self.buf = null;
-        }
-        self.clear();
+    pub fn deinit(self: *Ring) void {
+        self.ally.free(self.buf);
     }
 
     pub fn clear(self: *Ring) void {
@@ -45,10 +30,6 @@ pub const Ring = struct {
 
     pub fn capacity(_: *const Ring) usize {
         return CAPACITY;
-    }
-
-    fn bufLease(self: *const Ring) necro.core.Lease {
-        return self.buf_lease.?;
     }
 
     pub fn parseOffset(self: *const Ring) usize {
@@ -66,15 +47,10 @@ pub const Ring = struct {
     }
 
     fn data(self: *const Ring) *[CAPACITY]u8 {
-        return &self.buf.?.data;
+        return self.buf[0..CAPACITY];
     }
 
-    pub fn usedMut(self: *Ring) []u8 {
-        return self.data()[self.read_pos..][0..self.used_len];
-    }
-
-    pub fn writable(self: *Ring, pool: *RecvPool) !Writable {
-        try self.ensure(pool);
+    pub fn writable(self: *Ring) !Writable {
         if (self.used_len == 0) {
             self.read_pos = 0;
             self.parse_off = 0;
@@ -160,18 +136,15 @@ pub const Ring = struct {
 };
 
 test "ring wraps writable region to the front" {
-    var pool: RecvPool = try .init(std.testing.allocator, 1);
-    defer pool.deinit();
+    var ring = try Ring.init(std.testing.allocator);
+    defer ring.deinit();
 
-    var ring: Ring = .{};
-    defer ring.deinit(&pool);
-
-    const first = try ring.writable(&pool);
+    const first = try ring.writable();
     @memcpy(first.slice[CAPACITY - 4 .. CAPACITY], "tail");
     ring.read_pos = CAPACITY - 4;
     ring.used_len = 4;
 
-    const second = try ring.writable(&pool);
+    const second = try ring.writable();
     try std.testing.expectEqual(@as(usize, 0), second.offset);
     try std.testing.expectEqual(@as(usize, CAPACITY - 4), second.slice.len);
     @memcpy(second.slice[0..4], "head");
@@ -184,16 +157,13 @@ test "ring wraps writable region to the front" {
 }
 
 test "ring exposes wrapped logical bytes in order" {
-    var pool: RecvPool = try .init(std.testing.allocator, 1);
-    defer pool.deinit();
+    var ring = try Ring.init(std.testing.allocator);
+    defer ring.deinit();
 
-    var ring: Ring = .{};
-    defer ring.deinit(&pool);
-
-    const writable = try ring.writable(&pool);
-    @memset(writable.slice[0..CAPACITY], 0);
-    @memcpy(writable.slice[CAPACITY - 3 .. CAPACITY], "abc");
-    @memcpy(writable.slice[0..4], "defg");
+    const w = try ring.writable();
+    @memset(w.slice[0..CAPACITY], 0);
+    @memcpy(w.slice[CAPACITY - 3 .. CAPACITY], "abc");
+    @memcpy(w.slice[0..4], "defg");
     ring.read_pos = CAPACITY - 3;
     ring.used_len = 7;
 

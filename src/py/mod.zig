@@ -1,6 +1,8 @@
 pub const ffi = @import("ffi.zig");
 pub const request = @import("request.zig");
 pub const driver = @import("driver.zig");
+pub const step = @import("step.zig");
+pub const result = @import("result.zig");
 pub const module = @import("module.zig");
 pub const json = @import("json.zig");
 pub const subinterp = @import("subinterp.zig");

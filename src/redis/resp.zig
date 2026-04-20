@@ -38,6 +38,102 @@ fn writeBulk(buf: []u8, pos: *usize, s: []const u8) RespError!void {
     pos.* += 2;
 }
 
+pub const ParseError = error{
+    ProtocolError,
+};
+
+pub const Value = union(enum) {
+    simple: []const u8,
+    err: []const u8,
+    integer: i64,
+    null_val,
+    bulk: []const u8,
+};
+
+pub const ParseResult = union(enum) {
+    incomplete,
+    message: struct {
+        value: Value,
+        consumed: usize,
+    },
+};
+
+pub fn parseOne(data: []const u8) ParseError!ParseResult {
+    if (data.len == 0) return .incomplete;
+
+    const crlf_pos = std.mem.indexOf(u8, data, "\r\n") orelse return .incomplete;
+    const line = data[1..crlf_pos];
+
+    return switch (data[0]) {
+        '+' => .{ .message = .{ .value = .{ .simple = line }, .consumed = crlf_pos + 2 } },
+        '-' => .{ .message = .{ .value = .{ .err = line }, .consumed = crlf_pos + 2 } },
+        ':' => .{ .message = .{
+            .value = .{ .integer = std.fmt.parseInt(i64, line, 10) catch return error.ProtocolError },
+            .consumed = crlf_pos + 2,
+        } },
+        '_' => .{ .message = .{ .value = .null_val, .consumed = crlf_pos + 2 } },
+        '$' => blk: {
+            const len_val = std.fmt.parseInt(i64, line, 10) catch return error.ProtocolError;
+            if (len_val < 0) break :blk .{ .message = .{ .value = .null_val, .consumed = crlf_pos + 2 } };
+            const payload_len: usize = @intCast(len_val);
+            const total_needed = crlf_pos + 2 + payload_len + 2;
+            if (data.len < total_needed) break :blk .incomplete;
+            break :blk .{ .message = .{
+                .value = .{ .bulk = data[crlf_pos + 2 ..][0..payload_len] },
+                .consumed = total_needed,
+            } };
+        },
+        else => error.ProtocolError,
+    };
+}
+
+test "parseOne: simple string" {
+    const result = try parseOne("+OK\r\n");
+    try std.testing.expectEqualStrings("OK", result.message.value.simple);
+    try std.testing.expectEqual(@as(usize, 5), result.message.consumed);
+}
+
+test "parseOne: error" {
+    const result = try parseOne("-ERR bad\r\n");
+    try std.testing.expectEqualStrings("ERR bad", result.message.value.err);
+}
+
+test "parseOne: integer" {
+    const result = try parseOne(":42\r\n");
+    try std.testing.expectEqual(@as(i64, 42), result.message.value.integer);
+}
+
+test "parseOne: null" {
+    const result = try parseOne("_\r\n");
+    try std.testing.expect(result.message.value == .null_val);
+}
+
+test "parseOne: bulk string" {
+    const result = try parseOne("$5\r\nhello\r\n");
+    try std.testing.expectEqualStrings("hello", result.message.value.bulk);
+    try std.testing.expectEqual(@as(usize, 11), result.message.consumed);
+}
+
+test "parseOne: bulk string incomplete" {
+    const result = try parseOne("$5\r\nhel");
+    try std.testing.expect(result == .incomplete);
+}
+
+test "parseOne: negative bulk is null" {
+    const result = try parseOne("$-1\r\n");
+    try std.testing.expect(result.message.value == .null_val);
+}
+
+test "parseOne: empty data" {
+    const result = try parseOne("");
+    try std.testing.expect(result == .incomplete);
+}
+
+test "parseOne: no crlf yet" {
+    const result = try parseOne("+OK");
+    try std.testing.expect(result == .incomplete);
+}
+
 test "writeCommand: GET with one arg" {
     var buf: [64]u8 = undefined;
     const n = try writeCommand(&buf, "GET", &[_][]const u8{"mykey"});

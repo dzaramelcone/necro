@@ -106,10 +106,6 @@ pub fn memoryViewFromSlice(obj: *PyObject, data: []const u8) ?*PyObject {
     return c.PyMemoryView_FromBuffer(&view);
 }
 
-pub fn dictProxyNew(dict: *PyObject) PythonError!*PyObject {
-    return c.PyDictProxy_New(dict) orelse return error.PythonError;
-}
-
 pub fn freeObject(obj: *PyObject) void {
     const tp = objType(obj);
     if (tp.tp_free) |free| free(obj);
@@ -399,11 +395,6 @@ fn callObject(callable: *PyObject, args: ?*PyObject) PythonError!*PyObject {
     };
 }
 
-/// Call a Python callable with kwargs without printing exceptions.
-fn callObjectKwargsRaw(callable: *PyObject, args: ?*PyObject, kwargs: *PyObject) PythonError!*PyObject {
-    return c.PyObject_Call(callable, args, kwargs) orelse error.CallError;
-}
-
 /// Vectorcall a Python callable with no arguments (PEP 590).
 /// Fastest calling convention - no tuple creation, no method lookup.
 pub fn vectorcallNoArgs(callable: *PyObject) PythonError!*PyObject {
@@ -427,14 +418,6 @@ pub fn callOneArg(callable: *PyObject, arg: *PyObject) PythonError!*PyObject {
     return c.PyObject_CallOneArg(callable, arg) orelse error.CallError;
 }
 
-/// Call a Python callable with args tuple and kwargs dict. Caller must decref result.
-pub fn callObjectKwargs(callable: *PyObject, args: ?*PyObject, kwargs: *PyObject) PythonError!*PyObject {
-    return callObjectKwargsRaw(callable, args, kwargs) catch |err| {
-        errPrint();
-        return err;
-    };
-}
-
 pub fn callMethodNoArgs(obj: *PyObject, method: [*:0]const u8) PythonError!*PyObject {
     const callable = try getAttrRaw(obj, method);
     defer decref(callable);
@@ -455,6 +438,10 @@ pub fn incref(obj: *PyObject) void {
 
 pub fn decref(obj: *PyObject) void {
     c.Py_DecRef(obj);
+}
+
+pub fn refcnt(obj: *PyObject) isize {
+    return c.Py_REFCNT(obj);
 }
 
 pub fn increfBorrowed(obj: *PyObject) *PyObject {
@@ -555,7 +542,7 @@ pub fn longAsLong(obj: *PyObject) PythonError!c_long {
     return val;
 }
 
-fn floatFromDouble(v: f64) PythonError!*PyObject {
+pub fn floatFromDouble(v: f64) PythonError!*PyObject {
     return c.PyFloat_FromDouble(v) orelse return error.PythonError;
 }
 
@@ -563,10 +550,6 @@ pub fn floatAsDouble(obj: *PyObject) PythonError!f64 {
     const val = c.PyFloat_AsDouble(obj);
     if (val == -1.0 and c.PyErr_Occurred() != null) return error.ConversionError;
     return val;
-}
-
-pub fn unicodeFromString(s: [*:0]const u8) PythonError!*PyObject {
-    return c.PyUnicode_FromString(s) orelse return error.PythonError;
 }
 
 /// Create a Python str from a pointer + length. No null terminator needed.
@@ -679,11 +662,6 @@ fn dictSetItemString(dict: *PyObject, key: [*:0]const u8, value: *PyObject) Pyth
     if (c.PyDict_SetItemString(dict, key, value) != 0) return error.PythonError;
 }
 
-/// Set a dict item using a PyObject key (avoids temporary string creation).
-pub fn dictSetItem(dict: *PyObject, key: *PyObject, value: *PyObject) PythonError!void {
-    if (c.PyDict_SetItem(dict, key, value) != 0) return error.PythonError;
-}
-
 /// Returns a borrowed reference (do not decref).
 fn dictGetItem(dict: *PyObject, key: *PyObject) ?*PyObject {
     return c.PyDict_GetItem(dict, key);
@@ -702,38 +680,6 @@ pub fn listNew(len: isize) PythonError!*PyObject {
 
 pub fn listAppend(list: *PyObject, item: *PyObject) PythonError!void {
     if (c.PyList_Append(list, item) != 0) return error.PythonError;
-}
-
-// ── Layer 3: Comptime function wrapper ──────────────────────────────
-
-/// Wrap a Zig function as a CPython method definition.
-/// The Zig function must take no arguments (METH_NOARGS) and return
-/// either *PyObject or PythonError!*PyObject.
-fn wrapNoArgs(comptime name: [*:0]const u8, comptime func: fn () PythonError!*PyObject) c.PyMethodDef {
-    return .{
-        .ml_name = name,
-        .ml_meth = &struct {
-            fn wrapper(_: ?*PyObject, _: ?*PyObject) callconv(.c) ?*PyObject {
-                return func() catch |err| {
-                    c.PyErr_SetString(c.PyExc_RuntimeError, @errorName(err));
-                    return null;
-                };
-            }
-        }.wrapper,
-        .ml_flags = c.METH_NOARGS,
-        .ml_doc = null,
-    };
-}
-
-/// Wrap a Zig function as a CPython METH_VARARGS method definition.
-/// The Zig function signature: fn(?*PyObject, ?*PyObject) callconv(.c) ?*PyObject
-fn wrapVarArgs(comptime name: [*:0]const u8, comptime func: *const fn (?*PyObject, ?*PyObject) callconv(.c) ?*PyObject) c.PyMethodDef {
-    return .{
-        .ml_name = name,
-        .ml_meth = func,
-        .ml_flags = c.METH_VARARGS,
-        .ml_doc = null,
-    };
 }
 
 pub fn moduleStateRequired(comptime T: type, mod: *PyObject) PythonError!*T {
@@ -998,7 +944,7 @@ test "unicode round-trip" {
     init();
     defer deinit();
 
-    const obj = try unicodeFromString("hello necro");
+    const obj = try unicodeFromSlice("hello necro", 11);
     defer decref(obj);
 
     const back = try unicodeAsUTF8(obj);
@@ -1089,31 +1035,3 @@ test "error set and check" {
     try std.testing.expect(!errOccurred());
 }
 
-test "wrapNoArgs produces valid method" {
-    init();
-    defer deinit();
-
-    const answer = struct {
-        fn call() PythonError!*PyObject {
-            return longFromLong(42);
-        }
-    }.call;
-
-    var methods = [_]c.PyMethodDef{
-        wrapNoArgs("answer", answer),
-        std.mem.zeroes(c.PyMethodDef),
-    };
-
-    var def = moduleDef("test_wrap", &methods, -1, null, null, null, null);
-    const mod = try createModule(&def);
-    defer decref(mod);
-
-    const func = try getAttr(mod, "answer");
-    defer decref(func);
-
-    const result = try callObject(func, null);
-    defer decref(result);
-
-    const val = try longAsLong(result);
-    try std.testing.expectEqual(@as(c_long, 42), val);
-}
