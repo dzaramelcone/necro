@@ -1,8 +1,6 @@
 # necro
 
-The fastest Python web framework.
-
-The fastest HTTP/1.1 web server, period!  🧟‍♀️ 💨
+An unreasonably fast Python web framework. 🧟‍♀️ 💨
 
 ## Speed
 
@@ -39,8 +37,7 @@ Memory:
     under load:   105 MB
     peak RSS:     105 MB
 ```
-
-Benchmarked on consumer hardware. No pipelining!
+Note the memory stability. (I'll address the tail latency once the feature set matures.)
 
 Comparisons with simple json payloads:
 ```
@@ -56,27 +53,36 @@ uvicorn + starlette       50,976      5.01 ms
 uvicorn + fastapi         29,852      8.56 ms
 ```
 
+As usual benchmarks tend to be very distinct from real deployment performance scenarios but obviously this is in a separate tier from standard Python web frameworks and even from other languages' performance-oriented frameworks.
+
+There are so many axes and features to test for web server performance and this is a tiny snippet, so I'm going to get a benchmark together that gives everyone (including me) a better idea and understanding of real performance use cases at a glance.
+
 ## Simple
 A familiar developer experience:
 
 ```python
+# app.py
 import necro
 app = necro.App()
 
 @app.get("/")
 async def raise():
-    return {"message": "the dead rise"}
-
-app.run()
+    return {"data": "the dead rise"}
 ```
 
 ```bash
-necro run app:app
+necro host app
 ```
+
+Bye Gunicorn! Thanks for the good times.
+
+(Single process, no cross-worker thread contention, custom runtime, etc.)
 
 ### Postgres
 
-Built-in first-class Postgres support!
+Necro has Postgres support built in using its own Postgres driver in Zig.
+
+I found it faster than libpq so far.
 
 ```python
 import necro
@@ -84,7 +90,10 @@ app = necro.App()
 
 @app.get("/summon/{id}")
 async def summon_one(db, id):
-    return await db.fetch_one("SELECT id, name, power FROM minions WHERE id = $1", id)
+    return await db.fetch_one(
+        "SELECT id, name, power FROM minions WHERE id = $1",
+        id
+    )
 
 @app.post("/raise")
 async def raise_dead(db, body):
@@ -93,13 +102,11 @@ async def raise_dead(db, body):
         body.name,
         body.power
     )
-
-app.run()
 ```
 
-### Redis
+### Redict
 
-Built-in first-class Redis support!
+Same for Redict. Wow, the Redict protocol is extremely easy to implement.
 
 ```python
 import necro
@@ -111,15 +118,13 @@ async def bind(redis, body):
     await redis.set(body.name, body.soul)
     await redis.expire(body.name, 3600)
     return {"bound": body.name, "ttl": 3600}
-
-app.run()
 ```
 
 ### Type-safe SQL
 
 The framework's recommended approach to using the db.
 
-Highly optimized!
+Postgres queries return tuples. You can easily map these to structured data.
 
 Define your schema:
 
@@ -145,9 +150,6 @@ SELECT * FROM zombies WHERE id = {id};
 SELECT * FROM zombies ORDER BY decay_rate ASC;
 ```
 
-!!! info
-Did you know Claude's best language is SQL?
-
 Generate methods and models, complete with type hints and validations:
 
 ```bash
@@ -164,9 +166,10 @@ class Zombie(NecroModel):
     graveyard: str
 ```
 
-Now the `db` will have your queries:
+Now `db` will have your queries:
 
 ```python
+# Note the attribute accessor matches your filename.
 await db.spells.summon_zombie(id=id)
 await db.spells.raise_horde()
 ```
@@ -178,22 +181,34 @@ import necro
 
 app = necro.App()
 
+# Note that you can also inject that directly:
 @app.post("/summon")
 async def raise_horde(spells) -> list[Zombie]:
     return await spells.raise_horde()
-
-app.run()
 ```
+
+### HTMX
+Under development, check back soon.
+
 ### OpenAPI
+Under development, check back soon.
 
 ### Validations
+Currently, I am using speculative SIMD JSON, which can serialize at about 20GB/s on my mbp.
+
+More soon on this topic.
 
 ### Client
+Under development, check back soon.
 
 ### Websockets
+Under development, check back soon.
 
 ## One dependency
+The entire lib is 2MB.
 
 ```bash
 pip install necro
 ```
+
+1.5MB of that is BoringSSL, lol.
