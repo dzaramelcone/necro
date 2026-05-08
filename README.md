@@ -189,6 +189,12 @@ async def raise_horde(spells) -> list[Zombie]:
     return await spells.raise_horde()
 ```
 
+### How?
+
+Relative to other Python frameworks, Necro's edge is subinterpreters. It obviates the need for a lot of workarounds Python developers have had to do to solve GIL lock contention. There is no contention in Necro.  
+
+But going a step further, Necro owns the whole stack; the runtime, the drivers, the request/response pipeline, the parsing, the routing, the serializer/deserializer, etc. The ability to deeply integrate all of these systems opens up many new performance possibilities.
+
 ### HTMX
 Under development, check back soon.
 
