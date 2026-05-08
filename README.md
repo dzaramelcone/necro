@@ -53,9 +53,9 @@ uvicorn + starlette       50,976      5.01 ms
 uvicorn + fastapi         29,852      8.56 ms
 ```
 
-As usual benchmarks tend to be very distinct from real deployment performance scenarios but obviously this is in a separate tier from standard Python web frameworks and even from other languages' performance-oriented frameworks.
+As usual benchmarks tend to be very distinct from real deployment performance scenarios but my interest in developing Necro is in delivering a performance experience that is in a separate tier from standard Python web frameworks and even from other languages' performance-oriented frameworks.
 
-There are so many axes and features to test for web server performance and this is a tiny snippet, so I'm going to get a benchmark together that gives everyone (including me) a better idea and understanding of real performance use cases at a glance.
+There are so many axes and features to test for web server performance and this is a tiny slice of those dimensions, so I'm going to get a benchmark together that gives everyone (including me) a better idea and understanding of real performance use cases at a glance.
 
 ## Simple
 A familiar developer experience:
@@ -70,13 +70,13 @@ async def raise():
     return {"data": "the dead rise"}
 ```
 
+Though, this might be less familiar:
+
 ```bash
-necro host app
+necro host app --cert my_cert.crt --key my_cert.key
 ```
 
-Bye Gunicorn! Thanks for the good times.
-
-(Single process, no cross-worker thread contention, custom runtime, etc.)
+Just one process for deployment hosting. Bye Gunicorn! Thanks for the good times.
 
 ### Postgres
 
@@ -103,6 +103,8 @@ async def raise_dead(db, body):
         body.power
     )
 ```
+
+These get a million+ QPS. There are also some neat new features in the Postgres protocol and the Linux kernel for speeding this up even further that I want to take advantage of.
 
 ### Redict
 
