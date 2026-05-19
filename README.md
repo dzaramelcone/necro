@@ -66,7 +66,7 @@ import necro
 app = necro.App()
 
 @app.get("/")
-async def raise():
+async def raise_dead():
     return {"data": "the dead rise"}
 ```
 
