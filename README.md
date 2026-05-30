@@ -45,8 +45,6 @@ server                    req/s       avg latency
 necro                     1,514,316   240 µs
 nginx                     1,310,342   261 µs
 fasthttp (Go)             1,142,127   351 µs
-uvicorn, bare ASGI        556,123     441 µs
-granian, bare ASGI        549,132     445 µs
 Go net/http stdlib        502,746     684 µs
 uvicorn + litestar        260,007     0.97 ms
 uvicorn + starlette       50,976      5.01 ms
