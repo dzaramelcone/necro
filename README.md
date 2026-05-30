@@ -215,6 +215,8 @@ pip install necro
 
 1.5MB of that is BoringSSL, lol.
 
+No supply chain? No supply chain attacks!
+
 ## How?
 
 Relative to other Python frameworks, Necro's edge is subinterpreters. It obviates the need for a lot of workarounds Python developers have had to do to solve GIL lock contention. There is no contention in Necro.  
