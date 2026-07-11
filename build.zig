@@ -31,6 +31,22 @@ fn addPython(b: *std.Build, m: *std.Build.Module, link_lib: bool) void {
     m.link_libc = true;
 }
 
+fn addTls(b: *std.Build, m: *std.Build.Module) void {
+    const target = m.resolved_target.?.result;
+    if (target.os.tag != .linux) return;
+
+    const sysroot = switch (target.cpu.arch) {
+        .aarch64 => "linux-aarch64",
+        .x86_64 => "linux-x86_64",
+        else => unreachable,
+    };
+    m.addIncludePath(b.path("src/aio/tls"));
+    m.addSystemIncludePath(.{ .cwd_relative = b.fmt("sysroot/{s}/include", .{sysroot}) });
+    m.addLibraryPath(.{ .cwd_relative = b.fmt("sysroot/{s}/lib", .{sysroot}) });
+    m.linkSystemLibrary("ssl", .{ .use_pkg_config = .no });
+    m.linkSystemLibrary("crypto", .{ .use_pkg_config = .no });
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -50,10 +66,11 @@ pub fn build(b: *std.Build) void {
     });
     pyext.root_module.addOptions("build_options", options);
     pyext.root_module.addImport("necro", pyext.root_module);
-    pyext.lto = if (is_macos) null else .full;
+    pyext.lto = if (is_macos or optimize == .Debug) null else .full;
     pyext.link_gc_sections = true;
     if (is_macos) pyext.linker_allow_shlib_undefined = true;
     addPython(b, pyext.root_module, false);
+    addTls(b, pyext.root_module);
     b.installArtifact(pyext);
 
     const unit_tests = b.addTest(.{
@@ -66,6 +83,7 @@ pub fn build(b: *std.Build) void {
     unit_tests.root_module.addOptions("build_options", options);
     unit_tests.root_module.addImport("necro", unit_tests.root_module);
     addPython(b, unit_tests.root_module, true);
+    addTls(b, unit_tests.root_module);
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);

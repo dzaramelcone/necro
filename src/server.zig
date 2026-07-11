@@ -107,6 +107,7 @@ pub fn run(allocator: std.mem.Allocator, server: *const Server, module_name: []c
             });
             std.posix.exit(2);
         };
+    }
 
     const num_threads = server.num_threads;
 
@@ -175,16 +176,16 @@ pub fn run(allocator: std.mem.Allocator, server: *const Server, module_name: []c
 }
 
 fn pipelineThreadMain(allocator: std.mem.Allocator, server: *const Server, existing_socket: ?Socket, thread_idx: u16, module_name: []const u8, search_path: []const u8) !void {
-
     // Pin thread to CPU core (Linux only) - prevents cache thrashing from migration
-    if (comptime @import("builtin").os.tag == .linux) {
-        var set: std.os.linux.cpu_set_t = .{0} ** @typeInfo(std.os.linux.cpu_set_t).array.len;
+    if (builtin.os.tag == .linux) {
+        var set: std.os.linux.cpu_set_t = @splat(0);
         const word_idx = thread_idx / @bitSizeOf(usize);
         set[word_idx] = @as(usize, 1) << @intCast(thread_idx % @bitSizeOf(usize));
         std.os.linux.sched_setaffinity(0, &set) catch |err| {
             log.info("core affinity failed for thread {d}: {}", .{ thread_idx, err });
         };
     }
+
     const listen_socket = if (existing_socket) |s| s else blk: {
         const s = try Socket.initTcp(server.host, server.port);
         try s.enableReusePort();
@@ -215,7 +216,6 @@ fn pipelineThreadMain(allocator: std.mem.Allocator, server: *const Server, exist
         server.exchange_timeout_ms,
     );
     necro.pg.row.init(allocator);
-    try pl.init(allocator, &conns, 1024, &server.router, &worker_py, server.idle_ms);
 
     const redis_host = std.posix.getenv("REDIS_HOST") orelse "127.0.0.1";
     const redis_fd = connectTcpNonBlocking(redis_host, 6379) catch |err| blk: {

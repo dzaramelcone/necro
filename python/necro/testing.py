@@ -53,7 +53,7 @@ class TestClient:
         from necro import __version__
         self._thread = threading.Thread(
             target=core.run,
-            args=("127.0.0.1", self.port, 1, module_name, app_dir, 2048, __version__),
+            args=("127.0.0.1", self.port, 1, module_name, app_dir, 2048, __version__, "", ""),
             daemon=True,
         )
         self._thread.start()
