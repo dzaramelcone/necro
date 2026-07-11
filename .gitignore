@@ -2,6 +2,7 @@
 .zig-cache/
 zig-out/
 refs/
+*.o
 
 # Cross-compile sysroots
 sysroot/
@@ -31,6 +32,14 @@ htmlcov/
 venv/
 env/
 .env
+
+# Local experiments
+/scratch/
+
+# Local design and agent context
+/docs/plans/
+/AGENTS.md
+/CLAUDE.md
 
 # editors / OS
 .vscode/
